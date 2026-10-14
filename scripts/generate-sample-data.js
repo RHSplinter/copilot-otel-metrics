@@ -4,7 +4,8 @@
  *
  * The shapes mirror what `FileLogExporter` / `FileMetricExporter` / `FileSpanExporter` in
  * microsoft/vscode-copilot-chat write (JSON.stringify of OpenTelemetry SDK objects):
- *  - LogRecordImpl  -> { resource: { _rawAttributes, ... }, instrumentationScope, attributes, _hrTime, _body, ... }
+ * Field names match real exporter output (see test/fixtures/sdk-file-exporter.jsonl):
+ *  - LogRecordImpl  -> { hrTime, hrTimeObserved, spanContext, resource: { _rawAttributes }, instrumentationScope, attributes, _body, ... }
  *  - ResourceMetrics -> { resource, scopeMetrics: [{ scope, metrics: [{ descriptor, dataPointType, dataPoints }] }] }
  *  - Spans          -> `{}` (circular SDK span cannot be stringified, see microsoft/vscode#319993)
  *                      or, with --fixed-spans, the plain snapshot proposed in the upstream fix.
@@ -85,14 +86,12 @@ function createWindow(startMs, version) {
     ['service.name', 'copilot-chat'],
     ['service.version', version],
     ['session.id', sessionId],
-    ['telemetry.sdk.language', 'nodejs'],
-    ['telemetry.sdk.name', 'opentelemetry'],
-    ['telemetry.sdk.version', '2.5.1'],
   ];
   return {
     version,
     startMs,
-    resource: { _rawAttributes: raw, _asyncAttributesPending: false, _memoizedAttributes: Object.fromEntries(raw) },
+    resource: { _rawAttributes: raw, _asyncAttributesPending: false },
+    plainAttributes: Object.fromEntries(raw),
     scope: { name: 'copilot-chat', version },
     series: new Map(), // metric|attrsJSON -> { name, attributes, value }
   };
@@ -122,15 +121,14 @@ let pendingSpans = [];
 
 function emitLog(win, timeMs, body, attributes, traceId, spanId) {
   lines.push({
+    hrTime: hr(timeMs),
+    hrTimeObserved: hr(timeMs),
+    spanContext: traceId ? { traceId, spanId, traceFlags: 1 } : undefined,
     resource: win.resource,
     instrumentationScope: win.scope,
     attributes,
-    _hrTime: hr(timeMs),
-    _hrTimeObserved: hr(timeMs + randInt(0, 3)),
-    _spanContext: traceId ? { traceId, spanId, traceFlags: 1 } : undefined,
     _body: body,
-    _attributesCount: Object.keys(attributes).length,
-    _droppedAttributesCount: 0,
+    totalAttributesCount: Object.keys(attributes).length,
     _isReadonly: true,
     _logRecordLimits: { attributeCountLimit: 128, attributeValueLengthLimit: null },
   });
@@ -138,7 +136,7 @@ function emitLog(win, timeMs, body, attributes, traceId, spanId) {
 
 function addSpan(win, s) {
   pendingSpans.push(FIXED_SPANS ? {
-    resource: { attributes: win.resource._memoizedAttributes, asyncAttributesPending: false },
+    resource: { attributes: win.plainAttributes, asyncAttributesPending: false },
     instrumentationScope: win.scope,
     traceId: s.traceId, spanId: s.spanId, traceFlags: 1, isRemote: false,
     parentSpanContext: s.parentSpanId ? { traceId: s.traceId, spanId: s.parentSpanId, traceFlags: 1, isRemote: false } : undefined,
@@ -165,7 +163,8 @@ function exportMetrics(win, timeMs) {
   for (const [name, series] of byName) {
     const def = METRIC_DEFS[name];
     metrics.push({
-      descriptor: { name, description: def.description, unit: def.unit, valueType: def.valueType, advice: {} },
+      // Copilot creates instruments without unit/description; the SDK serializes them as ''.
+      descriptor: { name, type: def.type === 0 ? 'HISTOGRAM' : 'COUNTER', description: '', unit: '', valueType: 1, advice: {} },
       aggregationTemporality: 1,
       dataPointType: def.type,
       ...(def.type === 3 ? { isMonotonic: true } : {}),

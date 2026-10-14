@@ -37,8 +37,10 @@ attribute and resource attribute found) and a raw record explorer. Filter by VS 
 
 ## Sample data
 
-`data/sample-copilot-otel.jsonl` is synthetic data that mirrors the real file-exporter format (including the empty
-`{}` span lines). Regenerate with `npm run generate-sample` (`--seed`, `--out`, `--fixed-spans`).
+`data/sample-copilot-otel.jsonl` is synthetic data (the real export was not available yet). Its shapes match real
+file-exporter output, which was captured by running Copilot's exporter code with the same OpenTelemetry SDK versions
+(`test/fixtures/sdk-file-exporter.jsonl`, see [docs](docs/otel-data-schema.md#how-this-was-verified)). Regenerate the
+sample with `npm run generate-sample` (`--seed`, `--out`, `--fixed-spans`).
 
 ## Layout
 

@@ -10,7 +10,7 @@ const P = require('../src/parser/otelParser.js');
 const resource = { _rawAttributes: [['service.name', 'copilot-chat'], ['service.version', '0.30.0'], ['session.id', 'win-1']], _asyncAttributesPending: false };
 
 function sdkLog(eventName, attributes, sec = 1750000000) {
-  return { resource, instrumentationScope: { name: 'copilot-chat' }, attributes: Object.assign({ 'event.name': eventName }, attributes), _hrTime: [sec, 500000000], _body: eventName };
+  return { hrTime: [sec, 500000000], hrTimeObserved: [sec, 500000000], resource, instrumentationScope: { name: 'copilot-chat' }, attributes: Object.assign({ 'event.name': eventName }, attributes), _body: eventName };
 }
 
 function sdkSum(name, value, attributes, endSec, res = resource) {
@@ -70,6 +70,27 @@ test('parses plain span snapshots and OTLP/JSON', () => {
   assert.equal(recs[1].kind, 'metric');
   assert.equal(recs[1].temporality, 'delta');
   assert.equal(recs[1].value, 4);
+});
+
+test('parses real SDK file-exporter output (fixture produced with Copilot exporter code + SDK 0.212/2.x)', () => {
+  const text = fs.readFileSync(path.join(__dirname, 'fixtures', 'sdk-file-exporter.jsonl'), 'utf8');
+  const a = P.analyzeJsonl(text);
+  assert.equal(a.summary.parseErrors, 0);
+  assert.equal(a.summary.unknown, 0);
+  assert.equal(a.summary.lostSpans, 1); // the span really serializes as {}
+  assert.equal(a.summary.logs, 4);
+  assert.equal(a.summary.metricExports, 3);
+  assert.equal(a.summary.llmCalls, 1);
+  assert.equal(a.summary.inputTokens, 1200);
+  assert.equal(a.summary.outputTokens, 340);
+  assert.equal(a.summary.toolCalls, 1);
+  assert.equal(a.summary.linesAdded, 15); // 12 + 3 across cumulative exports, not double counted
+  assert.ok(a.summary.timeRange.start > 1.7e12);
+
+  const agg = [...P.aggregateMetrics(P.parseJsonl(text).records).values()];
+  const dur = agg.find(m => m.name === 'gen_ai.client.operation.duration');
+  assert.equal(dur.value.count, 3);
+  assert.equal(dur.value.sum, 6.5);
 });
 
 test('analyzes generated sample consistently (events vs metrics)', () => {
