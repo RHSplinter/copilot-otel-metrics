@@ -433,7 +433,25 @@
     return (resource && resource['session.id']) || '(no session.id)';
   }
 
-  /** Lists distinct resource sessions (one per VS Code window / extension host process). */
+  /** "https://github.com/owner/repo.git" / "git@host:owner/repo" -> "owner/repo". */
+  function repoNameFromUrl(url) {
+    if (typeof url !== 'string' || !url) return undefined;
+    const m = url.replace(/\.git$/i, '').replace(/\/+$/, '').match(/([^/:]+)[/:]([^/:]+)$/);
+    return m ? m[1] + '/' + m[2] : url;
+  }
+
+  function topKey(counts) {
+    let best, n = -1;
+    for (const k of Object.keys(counts)) if (counts[k] > n) { best = k; n = counts[k]; }
+    return best;
+  }
+
+  /**
+   * Lists distinct resource sessions (one per VS Code window / extension host process).
+   * OTel has no session title; `label` is derived from the workspace repo/branch that Copilot attaches to
+   * edit events (`copilot_chat.repo.remote_url`, `copilot_chat.repo.head_branch_name`), falling back to
+   * the service name.
+   */
   function listSessions(records) {
     const sessions = new Map();
     for (const r of records) {
@@ -441,14 +459,39 @@
       const id = sessionIdOf(r.resource);
       let s = sessions.get(id);
       if (!s) {
-        s = { id, serviceName: r.resource['service.name'], serviceVersion: r.resource['service.version'], first: undefined, last: undefined, records: 0 };
+        s = { id, serviceName: r.resource['service.name'], serviceVersion: r.resource['service.version'], first: undefined, last: undefined, records: 0, repos: {}, branches: {} };
         sessions.set(id, s);
       }
       s.records++;
       const t = r.time || r.start || r.end;
       if (t) { s.first = s.first === undefined ? t : Math.min(s.first, t); s.last = s.last === undefined ? t : Math.max(s.last, t); }
+      const a = r.attributes;
+      if ((r.kind === 'log' || r.kind === 'span') && a) {
+        const repo = repoNameFromUrl(a['copilot_chat.repo.remote_url']);
+        if (repo) {
+          s.repos[repo] = (s.repos[repo] || 0) + 1;
+          const branch = a['copilot_chat.repo.head_branch_name'];
+          if (branch) s.branches[repo + '\n' + branch] = (s.branches[repo + '\n' + branch] || 0) + 1;
+        }
+      }
     }
-    return [...sessions.values()].sort((a, b) => (a.first || 0) - (b.first || 0));
+    const list = [...sessions.values()].sort((a, b) => (a.first || 0) - (b.first || 0));
+    for (const s of list) {
+      const repos = Object.keys(s.repos).sort((x, y) => s.repos[y] - s.repos[x]);
+      s.repo = repos[0];
+      const branchKey = s.repo && topKey(Object.fromEntries(Object.entries(s.branches).filter(([k]) => k.startsWith(s.repo + '\n'))));
+      s.branch = branchKey ? branchKey.split('\n')[1] : undefined;
+      s.repos = repos;
+      delete s.branches;
+      if (s.repo) {
+        s.label = s.repo + (s.branch ? ' @ ' + s.branch : '') + (repos.length > 1 ? ` (+${repos.length - 1})` : '');
+      } else if (s.serviceName && s.serviceName !== 'copilot-chat') {
+        s.label = s.serviceName;
+      } else {
+        s.label = 'VS Code window';
+      }
+    }
+    return list;
   }
 
   function histTotals(list) {

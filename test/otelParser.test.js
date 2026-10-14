@@ -93,6 +93,19 @@ test('parses real SDK file-exporter output (fixture produced with Copilot export
   assert.equal(dur.value.sum, 6.5);
 });
 
+test('labels sessions with repo/branch from workspace metadata, falling back to service name', () => {
+  const cli = { _rawAttributes: [['service.name', 'github-copilot'], ['service.version', '1.0.92']] };
+  const text = [
+    sdkLog('copilot_chat.edit.feedback', { outcome: 'accepted', 'copilot_chat.repo.remote_url': 'https://github.com/octo/app.git', 'copilot_chat.repo.head_branch_name': 'dev' }),
+    sdkLog('copilot_chat.tool.call', {}),
+    Object.assign(sdkLog('copilot_chat.tool.call', {}), { resource: cli }),
+  ].map(o => JSON.stringify(o)).join('\n');
+  const sessions = P.listSessions(P.parseJsonl(text).records);
+  const byId = Object.fromEntries(sessions.map(s => [s.id, s]));
+  assert.equal(byId['win-1'].label, 'octo/app @ dev');
+  assert.equal(byId['(no session.id)'].label, 'github-copilot');
+});
+
 test('analyzes generated sample consistently (events vs metrics)', () => {
   const out = path.join(os.tmpdir(), `copilot-otel-test-${process.pid}.jsonl`);
   execFileSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'generate-sample-data.js'), '--out', out, '--seed', '7']);

@@ -56,14 +56,15 @@
   const pct = v => (v === undefined ? '–' : (v * 100).toFixed(1) + '%');
   const secs = v => (v === undefined ? '–' : v < 1 ? Math.round(v * 1000) + ' ms' : v.toFixed(2) + ' s');
   const ms = v => (v === undefined ? '–' : v >= 1000 ? (v / 1000).toFixed(2) + ' s' : Math.round(v) + ' ms');
-  const shortId = id => (id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-4) : id);
 
   function populateSessions() {
     const sel = $('sessionFilter');
     const current = sel.value;
     const sessions = window.CopilotOtel.listSessions(state.records);
-    sel.innerHTML = '<option value="">All sessions (' + sessions.length + ')</option>' + sessions.map(s =>
-      `<option value="${esc(s.id)}">${esc(shortId(s.id))} · v${esc(s.serviceVersion || '?')} · ${s.first ? esc(dateTime(s.first)) : ''}</option>`).join('');
+    sel.innerHTML = '<option value="">All sessions (' + sessions.length + ')</option>' + sessions.map(s => {
+      const tip = [s.id, s.serviceName && s.serviceName + (s.serviceVersion ? ' ' + s.serviceVersion : ''), s.repos.length > 1 ? 'Repos: ' + s.repos.join(', ') : ''].filter(Boolean).join('\n');
+      return `<option value="${esc(s.id)}" title="${esc(tip)}">${esc(s.label)}${s.first ? ' · ' + esc(dateTime(s.first)) : ''}</option>`;
+    }).join('');
     if (sessions.some(s => s.id === current)) sel.value = current;
   }
 

@@ -80,7 +80,7 @@ const METRIC_DEFS = {
   'copilot_chat.agent.summarization.count': { type: 3, unit: '{event}', description: 'Context summarization outcomes.', valueType: 0 },
 };
 
-function createWindow(startMs, version) {
+function createWindow(startMs, version, repo) {
   const sessionId = uuid() + String(startMs);
   const raw = [
     ['service.name', 'copilot-chat'],
@@ -93,6 +93,8 @@ function createWindow(startMs, version) {
     resource: { _rawAttributes: raw, _asyncAttributesPending: false },
     plainAttributes: Object.fromEntries(raw),
     scope: { name: 'copilot-chat', version },
+    // Workspace metadata Copilot adds to edit events (workspaceOTelMetadata.ts)
+    ws: repo ? { 'copilot_chat.repo.head_branch_name': repo.branch, 'copilot_chat.repo.head_commit_hash': hex(40), 'copilot_chat.repo.remote_url': repo.url } : {},
     series: new Map(), // metric|attrsJSON -> { name, attributes, value }
   };
 }
@@ -278,12 +280,12 @@ function simulateEdit(win, t, source) {
   for (let h = 0; h < hunks; h++) {
     const la = randInt(1, 40), lr = randInt(0, 25);
     const outcome = rand() < 0.83 ? 'accepted' : 'rejected';
-    emitLog(win, t + 1500 + h * 400, `copilot_chat.edit.hunk.action: ${outcome}`, { 'event.name': 'copilot_chat.edit.hunk.action', outcome, language_id: lang, request_id: requestId, line_count: la + lr, lines_added: la, lines_removed: lr });
+    emitLog(win, t + 1500 + h * 400, `copilot_chat.edit.hunk.action: ${outcome}`, { 'event.name': 'copilot_chat.edit.hunk.action', outcome, language_id: lang, request_id: requestId, line_count: la + lr, lines_added: la, lines_removed: lr, ...win.ws });
     record(win, 'copilot_chat.edit.acceptance.count', { 'copilot_chat.edit.source': 'chat_editing_hunk', 'copilot_chat.edit.outcome': outcome, 'copilot_chat.language_id': lang }, 1);
     if (outcome === 'accepted') { added += la; removed += lr; }
   }
   const fileOutcome = added ? 'accepted' : 'rejected';
-  emitLog(win, t + 4000, `copilot_chat.edit.feedback: ${fileOutcome}`, { 'event.name': 'copilot_chat.edit.feedback', outcome: fileOutcome, language_id: lang, participant: 'copilot', request_id: requestId, edit_surface: 'agent', has_remaining_edits: false, is_notebook: false });
+  emitLog(win, t + 4000, `copilot_chat.edit.feedback: ${fileOutcome}`, { 'event.name': 'copilot_chat.edit.feedback', outcome: fileOutcome, language_id: lang, participant: 'copilot', request_id: requestId, edit_surface: 'agent', has_remaining_edits: false, is_notebook: false, ...win.ws });
   record(win, 'copilot_chat.edit.acceptance.count', { 'copilot_chat.edit.source': source, 'copilot_chat.edit.outcome': fileOutcome, 'copilot_chat.language_id': lang }, 1);
   if (!added) return;
   record(win, 'copilot_chat.lines_of_code.count', { type: 'added', 'copilot_chat.language_id': lang }, added);
@@ -292,7 +294,7 @@ function simulateEdit(win, t, source) {
   for (const delay of [5000, 30000, 120000, 300000, 600000, 900000]) {
     fourGram = Math.max(0, fourGram - rand() * 0.08);
     noRevert = Math.max(0, noRevert - rand() * 0.05);
-    if (rand() < 0.5) emitLog(win, t + delay, 'copilot_chat.edit.survival', { 'event.name': 'copilot_chat.edit.survival', edit_source: source, survival_rate_four_gram: +fourGram.toFixed(3), survival_rate_no_revert: +noRevert.toFixed(3), time_delay_ms: delay, did_branch_change: false, request_id: requestId });
+    if (rand() < 0.5) emitLog(win, t + delay, 'copilot_chat.edit.survival', { 'event.name': 'copilot_chat.edit.survival', edit_source: source, survival_rate_four_gram: +fourGram.toFixed(3), survival_rate_no_revert: +noRevert.toFixed(3), time_delay_ms: delay, did_branch_change: false, request_id: requestId, ...win.ws });
   }
 }
 
@@ -300,21 +302,21 @@ function simulateInlineChat(win, t) {
   const lang = weighted(LANGS);
   const accepted = rand() < 0.7;
   const editCount = randInt(1, 4);
-  emitLog(win, t, `copilot_chat.inline.done: ${accepted ? 'accepted' : 'rejected'}`, { 'event.name': 'copilot_chat.inline.done', accepted, language_id: lang, edit_count: editCount, edit_line_count: editCount * randInt(2, 15), reply_type: 'inlineChatEdit', is_notebook: false });
+  emitLog(win, t, `copilot_chat.inline.done: ${accepted ? 'accepted' : 'rejected'}`, { 'event.name': 'copilot_chat.inline.done', accepted, language_id: lang, edit_count: editCount, edit_line_count: editCount * randInt(2, 15), reply_type: 'inlineChatEdit', is_notebook: false, ...win.ws });
   record(win, 'copilot_chat.edit.acceptance.count', { 'copilot_chat.edit.source': 'inline_chat', 'copilot_chat.edit.outcome': accepted ? 'accepted' : 'rejected', 'copilot_chat.language_id': lang }, 1);
 }
 
 // 4 VS Code windows across 3 days (one restart on a newer version)
 const base = Date.UTC(2026, 9, 12, 7, 30);
 const windows = [
-  { start: base, version: VERSIONS[0], chats: 4 },
-  { start: base + 26 * 3600e3, version: VERSIONS[1], chats: 5 },
-  { start: base + 27.5 * 3600e3, version: VERSIONS[1], chats: 2 },
+  { start: base, version: VERSIONS[0], chats: 4, repo: { url: 'https://github.com/contoso/web-shop.git', branch: 'main' } },
+  { start: base + 26 * 3600e3, version: VERSIONS[1], chats: 5, repo: { url: 'https://github.com/contoso/web-shop.git', branch: 'feature/checkout' } },
+  { start: base + 27.5 * 3600e3, version: VERSIONS[1], chats: 2, repo: { url: 'https://github.com/contoso/infra.git', branch: 'main' } },
   { start: base + 49 * 3600e3, version: VERSIONS[2], chats: 5 },
 ];
 
 for (const w of windows) {
-  const win = createWindow(w.start, w.version);
+  const win = createWindow(w.start, w.version, w.repo);
   let t = w.start + randInt(60e3, 600e3);
   for (let c = 0; c < w.chats; c++) {
     const model = weighted(MODELS.map(m => [m, m.w]));
