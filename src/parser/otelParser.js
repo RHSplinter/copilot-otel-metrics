@@ -429,8 +429,10 @@
     return options[options.length - 1];
   }
 
+  const NO_SESSION_ID = '(no session.id)';
+
   function sessionIdOf(resource) {
-    return (resource && resource['session.id']) || '(no session.id)';
+    return (resource && resource['session.id']) || NO_SESSION_ID;
   }
 
   /** "https://github.com/owner/repo.git" / "git@host:owner/repo" -> "owner/repo". */
@@ -450,7 +452,7 @@
    * Lists distinct resource sessions (one per VS Code window / extension host process).
    * OTel has no session title; `label` is derived from the workspace repo/branch that Copilot attaches to
    * edit events (`copilot_chat.repo.remote_url`, `copilot_chat.repo.head_branch_name`), falling back to
-   * the service name.
+   * the (shortened) session.id.
    */
   function listSessions(records) {
     const sessions = new Map();
@@ -485,10 +487,10 @@
       delete s.branches;
       if (s.repo) {
         s.label = s.repo + (s.branch ? ' @ ' + s.branch : '') + (repos.length > 1 ? ` (+${repos.length - 1})` : '');
-      } else if (s.serviceName && s.serviceName !== 'copilot-chat') {
-        s.label = s.serviceName;
+      } else if (s.id === NO_SESSION_ID) {
+        s.label = s.serviceName ? `${s.serviceName} ${NO_SESSION_ID}` : NO_SESSION_ID;
       } else {
-        s.label = 'VS Code window';
+        s.label = s.id.length > 16 ? `${s.id.slice(0, 8)}…${s.id.slice(-4)}` : s.id;
       }
     }
     return list;

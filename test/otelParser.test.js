@@ -93,17 +93,20 @@ test('parses real SDK file-exporter output (fixture produced with Copilot export
   assert.equal(dur.value.sum, 6.5);
 });
 
-test('labels sessions with repo/branch from workspace metadata, falling back to service name', () => {
+test('labels sessions with repo/branch from workspace metadata, falling back to session id', () => {
   const cli = { _rawAttributes: [['service.name', 'github-copilot'], ['service.version', '1.0.92']] };
+  const noRepo = { _rawAttributes: [['service.name', 'copilot-chat'], ['session.id', '9c2d7767-aaaa-bbbb-cccc-1234567890ab1791790200000']] };
   const text = [
     sdkLog('copilot_chat.edit.feedback', { outcome: 'accepted', 'copilot_chat.repo.remote_url': 'https://github.com/octo/app.git', 'copilot_chat.repo.head_branch_name': 'dev' }),
     sdkLog('copilot_chat.tool.call', {}),
     Object.assign(sdkLog('copilot_chat.tool.call', {}), { resource: cli }),
+    Object.assign(sdkLog('copilot_chat.tool.call', {}), { resource: noRepo }),
   ].map(o => JSON.stringify(o)).join('\n');
   const sessions = P.listSessions(P.parseJsonl(text).records);
   const byId = Object.fromEntries(sessions.map(s => [s.id, s]));
   assert.equal(byId['win-1'].label, 'octo/app @ dev');
-  assert.equal(byId['(no session.id)'].label, 'github-copilot');
+  assert.equal(byId['(no session.id)'].label, 'github-copilot (no session.id)');
+  assert.equal(byId['9c2d7767-aaaa-bbbb-cccc-1234567890ab1791790200000'].label, '9c2d7767…0000');
 });
 
 test('analyzes generated sample consistently (events vs metrics)', () => {
