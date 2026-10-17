@@ -19,10 +19,10 @@ const DATA_FILE = resolveDataFile(fileArg);
 
 const ROOT = path.join(__dirname, '..');
 const ROUTES = {
-  '/': path.join(ROOT, 'dashboard', 'index.html'),
-  '/styles.css': path.join(ROOT, 'dashboard', 'styles.css'),
-  '/charts.js': path.join(ROOT, 'dashboard', 'charts.js'),
-  '/app.js': path.join(ROOT, 'dashboard', 'app.js'),
+  '/': path.join(ROOT, 'public', 'index.html'),
+  '/styles.css': path.join(ROOT, 'public', 'styles.css'),
+  '/charts.js': path.join(ROOT, 'public', 'charts.js'),
+  '/app.js': path.join(ROOT, 'public', 'app.js'),
   '/otelParser.js': path.join(ROOT, 'src', 'parser', 'otelParser.js'),
 };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };

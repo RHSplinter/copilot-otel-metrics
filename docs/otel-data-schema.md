@@ -10,8 +10,8 @@ The real `data/copilot-otel.jsonl` was not available when this was written. The 
 Copilot Chat source ([`fileExporters.ts`](https://github.com/microsoft/vscode-copilot-chat/blob/main/src/platform/otel/node/fileExporters.ts),
 `otelServiceImpl.ts`, `genAiEvents.ts`, `genAiMetrics.ts`) and by running that exporter code with the same SDK versions
 (`@opentelemetry/sdk-logs` 0.212, `sdk-metrics`/`sdk-trace-node`/`resources` 2.x). The resulting output is committed as
-[`test/fixtures/sdk-file-exporter.jsonl`](../test/fixtures/sdk-file-exporter.jsonl) and covered by `npm test`
-(regenerate with [`scripts/generate-sdk-fixture.js`](../scripts/generate-sdk-fixture.js)). Run `npm run inspect` on your
+[`dashboard/test/fixtures/sdk-file-exporter.jsonl`](../dashboard/test/fixtures/sdk-file-exporter.jsonl) and covered by `npm test`
+(regenerate with [`dashboard/scripts/generate-sdk-fixture.js`](../dashboard/scripts/generate-sdk-fixture.js)). Run `npm run inspect` on your
 own export to confirm it matches.
 
 ## Line types
@@ -96,7 +96,7 @@ the file export these spans are `{}`; VS Code MCP tools appear in tool events as
 
 **Resolving hashed names.** MCP server, tool and external tool names are SHA-256 hashes. The parser hashes candidate
 names and matches them: well-known names (GitHub MCP server and its tools, bundled plugins), plain tool names and
-tool definitions found in the file, and — when served by `scripts/serve.js` — MCP server *names* (keys only) from local
+tool definitions found in the file, and — when served by `dashboard/scripts/serve.js` — MCP server *names* (keys only) from local
 configs: `~/.copilot/mcp-config.json`, Copilot CLI plugin `mcp.json` files, VS Code user/profile `mcp.json`, agent
 plugins, and the `mcpServerDefinitionProviders` labels of installed VS Code extensions (localized via `package.nls.json`).
 Unresolved names are shown as a short hash.

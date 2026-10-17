@@ -93,7 +93,7 @@ function dashboard(fetch) {
     getElementById: get, addEventListener(name, handler) { this[name] = handler; },
     body: { classList: { add() {}, remove() {} } },
   };
-  vm.runInNewContext(fs.readFileSync(path.join(root, 'dashboard', 'app.js'), 'utf8'),
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8'),
     { window, document, fetch, location: { protocol: 'http:' }, setTimeout, clearTimeout });
   return { window, document, get };
 }
