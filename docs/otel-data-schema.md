@@ -28,10 +28,15 @@ Every record carries a `resource` (`_rawAttributes: [[key, value], …]`):
 `service.name` (`copilot-chat`), `service.version` (extension version), `session.id` (one per VS Code window), plus
 anything from `OTEL_RESOURCE_ATTRIBUTES`.
 
-The dashboard session dropdown adds `[HydraFusion]` and `[HydraFusion Max]` tags when records for that
-resource session have `gen_ai.request.model` or `gen_ai.response.model` equal to `hydrafusion` or
-`hydrafusion-max`, respectively. Both tags appear if both models were used. These describe usage anywhere
-in the window/session, not necessarily its current model or every individual chat.
+Copilot CLI / VS Code agent host records (`service.name` `github-copilot`) have no resource `session.id`. Their spans
+carry `gen_ai.conversation.id` (the CLI session id, also the `~/.copilot/session-state/<id>` folder name); child spans
+without it inherit it through their `traceId`. The dashboard lists each conversation as its own session, titled from
+`name` / `repository` / `branch` in that folder's `workspace.yaml` (`GET /api/sessions`, server mode only).
+Metrics are aggregated across sessions and stay under `(no session.id)`.
+
+The session dropdown adds `[HydraFusion]` / `[HydraFusion Max]` tags (and pill badges for the selected session) when
+the session's spans or logs have `gen_ai.request.model` or `gen_ai.response.model` equal to `hydrafusion` /
+`hydrafusion-max`. Both tags appear if both models were used.
 
 The parser also accepts plain span snapshots (`traceId`, `spanId`, `name`, `startTime`, `endTime`, `attributes`, …)
 and OTLP/JSON (`resourceSpans` / `resourceLogs` / `resourceMetrics`) in case the exporter is fixed or another

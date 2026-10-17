@@ -116,3 +116,26 @@ test('readMcpServerNames returns only server names from Copilot CLI and VS Code 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('reads only title, repository and branch from the Copilot CLI session store', () => {
+  const { readCliSessions } = require('../scripts/cliSessions.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-sessions-'));
+  try {
+    const dir = path.join(home, '.copilot', 'session-state');
+    fs.mkdirSync(path.join(dir, 'abc'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'summary-only'));
+    fs.mkdirSync(path.join(dir, 'empty'));
+    fs.writeFileSync(path.join(dir, 'abc', 'workspace.yaml'), 'id: abc\r\ncwd: C:\\secret\r\nrepository: octo/app\r\nbranch: main\r\nname: "Fix login"\r\n');
+    fs.writeFileSync(path.join(dir, 'summary-only', 'workspace.yaml'), 'summary: Add caching\n');
+    fs.mkdirSync(path.join(dir, 'block'));
+    fs.writeFileSync(path.join(dir, 'block', 'workspace.yaml'), 'name: |-\n  Multi-line\n  title\nbranch: dev\n');
+    assert.deepEqual(readCliSessions(home), {
+      abc: { name: 'Fix login', repository: 'octo/app', branch: 'main' },
+      'summary-only': { name: 'Add caching' },
+      block: { name: 'Multi-line title', branch: 'dev' },
+    });
+    assert.deepEqual(readCliSessions(path.join(home, 'missing')), {});
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

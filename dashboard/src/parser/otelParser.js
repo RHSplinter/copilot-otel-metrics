@@ -512,8 +512,28 @@
 
   const NO_SESSION_ID = '(no session.id)';
 
-  function sessionIdOf(resource) {
-    return (resource && resource['session.id']) || NO_SESSION_ID;
+  const SESSION_TAGS = { hydrafusion: 'HydraFusion', 'hydrafusion-max': 'HydraFusion Max' };
+
+  /**
+   * Returns record -> session key. VS Code windows are keyed by resource `session.id`. Copilot CLI / agent host
+   * records have no resource session.id; their spans are keyed by `gen_ai.conversation.id` (the CLI session id),
+   * inherited through `traceId` by child spans that lack it. Metrics are aggregated across sessions and stay
+   * under NO_SESSION_ID.
+   */
+  function sessionResolver(records) {
+    const byTrace = new Map();
+    for (const r of records) {
+      const c = (r.kind === 'span' || r.kind === 'log') && r.traceId && r.attributes && r.attributes['gen_ai.conversation.id'];
+      if (c && !(r.resource && r.resource['session.id']) && !byTrace.has(r.traceId)) byTrace.set(r.traceId, c);
+    }
+    return r => {
+      if (r.resource && r.resource['session.id']) return r.resource['session.id'];
+      if (r.kind === 'span' || r.kind === 'log') {
+        const c = (r.attributes && r.attributes['gen_ai.conversation.id']) || (r.traceId && byTrace.get(r.traceId));
+        if (c) return c;
+      }
+      return NO_SESSION_ID;
+    };
   }
 
   /** "https://github.com/owner/repo.git" / "git@host:owner/repo" -> "owner/repo". */
@@ -530,33 +550,35 @@
   }
 
   /**
-   * Lists distinct resource sessions (one per VS Code window / extension host process).
-   * OTel has no session title; `label` is derived from the workspace repo/branch that Copilot attaches to
-   * edit events (`copilot_chat.repo.remote_url`, `copilot_chat.repo.head_branch_name`), falling back to
-   * the (shortened) session.id.
+   * Lists distinct sessions: one per VS Code window (resource `session.id`) and one per Copilot CLI / agent host
+   * session (`gen_ai.conversation.id`, see sessionResolver).
+   * OTel has no session title; `label` is the CLI session name from `options.sessionInfo` (local session store),
+   * else the workspace repo/branch that Copilot attaches to edit events (`copilot_chat.repo.remote_url`,
+   * `copilot_chat.repo.head_branch_name`), falling back to the (shortened) session id.
+   * `tags` lists HydraFusion models used by the session's spans/logs.
+   * @param {{ sessionInfo?: Object<string, { name?: string, repository?: string, branch?: string }> }} [options]
    */
-  function listSessions(records) {
+  function listSessions(records, options) {
+    const info = (options && options.sessionInfo) || {};
+    const sessionOf = sessionResolver(records);
     const sessions = new Map();
     for (const r of records) {
       if (!r.resource) continue;
-      const id = sessionIdOf(r.resource);
+      const id = sessionOf(r);
       let s = sessions.get(id);
       if (!s) {
-        s = { id, serviceName: r.resource['service.name'], serviceVersion: r.resource['service.version'], first: undefined, last: undefined, records: 0, repos: {}, branches: {}, tags: [] };
+        s = { id, cli: id !== NO_SESSION_ID && !r.resource['session.id'], serviceName: r.resource['service.name'], serviceVersion: r.resource['service.version'], first: undefined, last: undefined, records: 0, repos: {}, branches: {}, tags: [] };
         sessions.set(id, s);
       }
       s.records++;
       const t = r.time || r.start || r.end;
       if (t) { s.first = s.first === undefined ? t : Math.min(s.first, t); s.last = s.last === undefined ? t : Math.max(s.last, t); }
       const a = r.attributes;
-      if (a) {
+      if ((r.kind === 'log' || r.kind === 'span') && a) {
         for (const key of ['gen_ai.request.model', 'gen_ai.response.model']) {
-          const model = a[key];
-          const tag = model === 'hydrafusion' ? 'HydraFusion' : model === 'hydrafusion-max' ? 'HydraFusion Max' : undefined;
+          const tag = SESSION_TAGS[a[key]];
           if (tag && !s.tags.includes(tag)) s.tags.push(tag);
         }
-      }
-      if ((r.kind === 'log' || r.kind === 'span') && a) {
         const repo = repoNameFromUrl(a['copilot_chat.repo.remote_url']);
         if (repo) {
           s.repos[repo] = (s.repos[repo] || 0) + 1;
@@ -574,7 +596,15 @@
       s.branch = branchKey ? branchKey.split('\n')[1] : undefined;
       s.repos = repos;
       delete s.branches;
-      if (s.repo) {
+      const meta = info[s.id];
+      if (meta && !s.repo && meta.repository) {
+        s.repo = meta.repository;
+        s.branch = meta.branch;
+        s.repos = [meta.repository];
+      }
+      if (meta && meta.name) {
+        s.label = meta.name;
+      } else if (s.repo) {
         s.label = s.repo + (s.branch ? ' @ ' + s.branch : '') + (repos.length > 1 ? ` (+${repos.length - 1})` : '');
       } else if (s.id === NO_SESSION_ID) {
         s.label = s.serviceName ? `${s.serviceName} ${NO_SESSION_ID}` : NO_SESSION_ID;
@@ -829,8 +859,9 @@
    */
   function analyze(allRecords, options) {
     const opts = options || {};
+    const sessionOf = opts.sessionId && sessionResolver(allRecords);
     const records = opts.sessionId
-      ? allRecords.filter(r => r.kind === 'lostSpan' || r.kind === 'unknown' || (r.resource && sessionIdOf(r.resource) === opts.sessionId))
+      ? allRecords.filter(r => r.kind === 'lostSpan' || r.kind === 'unknown' || (r.resource && sessionOf(r) === opts.sessionId))
       : allRecords;
 
     const logs = records.filter(r => r.kind === 'log');
@@ -1153,5 +1184,5 @@
     return result;
   }
 
-  return { parseJsonl, normalizeObject, aggregateMetrics, analyze, analyzeJsonl, listSessions, toMs, resourceAttributes, sha256Hex };
+  return { parseJsonl, normalizeObject, aggregateMetrics, analyze, analyzeJsonl, listSessions, sessionResolver, toMs, resourceAttributes, sha256Hex };
 });

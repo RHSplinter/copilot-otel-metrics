@@ -128,8 +128,31 @@ test('tags sessions with HydraFusion models without changing labels or mixing se
   assert.deepEqual(sessions.max.tags, ['HydraFusion Max']);
   assert.deepEqual(sessions.both.tags, ['HydraFusion', 'HydraFusion Max']);
   assert.deepEqual(sessions.ordinary.tags, []);
-  assert.deepEqual(sessions['win-1'].tags, ['HydraFusion']);
+  assert.deepEqual(sessions['win-1'].tags, [], 'metrics are aggregated across sessions and must not tag one');
   assert.equal(sessions.fusion.label, 'fusion');
+});
+
+test('splits Copilot CLI records per conversation, tags HydraFusion and uses CLI session titles', () => {
+  const res = { attributes: { 'service.name': 'github-copilot', 'service.version': '1.0.95' } };
+  const span = (traceId, name, attributes) => ({ type: 'span', traceId, spanId: name + traceId, name, startTime: [1791969299, 0], endTime: [1791969300, 0], attributes, resource: res });
+  const records = P.parseJsonl([
+    span('t1', 'invoke_agent', { 'gen_ai.conversation.id': 'conv-a', 'gen_ai.request.model': 'hydrafusion' }),
+    span('t1', 'chat claude', { 'gen_ai.request.model': 'claude-opus-5.5' }),
+    span('t2', 'chat hydrafusion-max', { 'gen_ai.conversation.id': 'conv-b', 'gen_ai.request.model': 'hydrafusion-max' }),
+    span('t3', 'chat gpt', { 'gen_ai.conversation.id': 'conv-c', 'gen_ai.request.model': 'gpt-5.3-codex' }),
+    { type: 'metric', name: 'gen_ai.client.operation.duration', dataPoints: [{ attributes: { 'gen_ai.request.model': 'hydrafusion' }, startTime: [1791969299, 0], endTime: [1791969300, 0], value: 1 }], resource: res },
+  ].map(o => JSON.stringify(o)).join('\n')).records;
+  const sessionInfo = { 'conv-a': { name: 'Copilot otel dashboard', repository: 'octo/app', branch: 'main' } };
+  const byId = Object.fromEntries(P.listSessions(records, { sessionInfo }).map(s => [s.id, s]));
+  assert.deepEqual(Object.keys(byId).sort(), ['(no session.id)', 'conv-a', 'conv-b', 'conv-c']);
+  assert.deepEqual(byId['conv-a'].tags, ['HydraFusion']);
+  assert.equal(byId['conv-a'].records, 2, 'child span inherits the conversation through its trace');
+  assert.equal(byId['conv-a'].label, 'Copilot otel dashboard');
+  assert.equal(byId['conv-a'].repo, 'octo/app');
+  assert.deepEqual(byId['conv-b'].tags, ['HydraFusion Max']);
+  assert.deepEqual(byId['conv-c'].tags, []);
+  assert.deepEqual(byId['(no session.id)'].tags, []);
+  assert.equal(P.analyze(records, { sessionId: 'conv-a' }).summary.spans, 2);
 });
 
 test('analyzes generated sample consistently (events vs metrics)', () => {

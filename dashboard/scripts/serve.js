@@ -10,6 +10,7 @@ const http = require('node:http');
 const path = require('node:path');
 const { resolveDataFile } = require('./dataFile');
 const { readMcpServerNames } = require('./mcpNames');
+const { readCliSessions } = require('./cliSessions');
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
@@ -45,6 +46,10 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/names') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ mcpServers: readMcpServerNames() }));
+  }
+  if (url.pathname === '/api/sessions') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ sessions: readCliSessions() }));
   }
   const file = ROUTES[url.pathname];
   if (!file) {

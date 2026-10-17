@@ -5,7 +5,7 @@
   const { hbar, countBars, donut, columns, lines, table, statList, fmt, esc } = window.Charts;
   const $ = id => document.getElementById(id);
 
-  const state = { records: [], parsed: null, sourceLabel: '', fromServer: false, fileHandle: null, loadId: 0, knownNames: [] };
+  const state = { records: [], parsed: null, sourceLabel: '', fromServer: false, fileHandle: null, loadId: 0, knownNames: [], sessionInfo: {}, sessions: [] };
 
   // ---------------------------------------------------------------------------
   // Loading
@@ -46,6 +46,7 @@
       if (!data.ok) throw new Error(await data.text());
       const text = await data.text();
       state.knownNames = await fetchKnownNames();
+      state.sessionInfo = await fetchSessionInfo();
       await nextPaint();
       if (id !== state.loadId) return;
       state.fromServer = true;
@@ -64,6 +65,16 @@
       return res.ok ? (await res.json()).mcpServers || [] : [];
     } catch (_) {
       return [];
+    }
+  }
+
+  // Copilot CLI session titles/repos from the local session store (server mode only); optional.
+  async function fetchSessionInfo() {
+    try {
+      const res = await fetch('/api/sessions', { cache: 'no-store' });
+      return res.ok ? (await res.json()).sessions || {} : {};
+    } catch (_) {
+      return {};
     }
   }
 
@@ -148,13 +159,22 @@
   function populateSessions() {
     const sel = $('sessionFilter');
     const current = sel.value;
-    const sessions = window.CopilotOtel.listSessions(state.records);
+    const sessions = window.CopilotOtel.listSessions(state.records, { sessionInfo: state.sessionInfo });
+    state.sessions = sessions;
     sel.innerHTML = '<option value="">All sessions (' + sessions.length + ')</option>' + sessions.map(s => {
-      const tip = [s.id, s.serviceName && s.serviceName + (s.serviceVersion ? ' ' + s.serviceVersion : ''), s.repos.length > 1 ? 'Repos: ' + s.repos.join(', ') : ''].filter(Boolean).join('\n');
+      const where = s.repo && s.label !== s.repo ? s.repo + (s.branch ? ' @ ' + s.branch : '') : '';
+      const tip = [s.label.length > 80 ? s.label : '', s.id, where, s.serviceName && s.serviceName + (s.serviceVersion ? ' ' + s.serviceVersion : ''), s.repos.length > 1 ? 'Repos: ' + s.repos.join(', ') : ''].filter(Boolean).join('\n');
       const tags = s.tags.map(tag => `[${tag}] `).join('');
-      return `<option value="${esc(s.id)}" title="${esc(tip)}">${esc(tags)}${esc(s.label)}${s.first ? ' · ' + esc(dateTime(s.first)) : ''}</option>`;
+      const label = s.label.length > 80 ? s.label.slice(0, 79) + '…' : s.label;
+      return `<option value="${esc(s.id)}" title="${esc(tip)}">${esc(tags)}${esc(label)}${s.first ? ' · ' + esc(dateTime(s.first)) : ''}</option>`;
     }).join('');
     if (sessions.some(s => s.id === current)) sel.value = current;
+    renderSessionTags();
+  }
+
+  function renderSessionTags() {
+    const s = (state.sessions || []).find(x => x.id === $('sessionFilter').value);
+    $('sessionTags').innerHTML = s ? s.tags.map(tag => `<span class="tag">${esc(tag)}</span>`).join('') : '';
   }
 
   function render() {
@@ -201,7 +221,7 @@
     const editsAcc = a.edits.bySource.reduce((t, x) => t + x.accepted, 0);
     const editsRej = a.edits.bySource.reduce((t, x) => t + x.rejected, 0);
     $('kpis').innerHTML = [
-      kpi('Chat sessions', fmt(s.chatSessions), `${s.sessions} VS Code window(s)`),
+      kpi('Chat sessions', fmt(s.chatSessions), `${s.sessions} window/CLI session(s)`),
       kpi('Agent invocations', fmt(a.agent.invocations), a.agent.avgTurnsPerInvocation ? `${a.agent.avgTurnsPerInvocation.toFixed(1)} turns avg` : ''),
       kpi('LLM calls', fmt(s.llmCalls), `${Object.keys(a.llm.byModel).length} model(s)`),
       kpi('Input tokens', fmt(s.inputTokens), s.llmCalls ? `${fmt(s.inputTokens / s.llmCalls, 0)} per call` : ''),
@@ -421,10 +441,11 @@
     const kind = $('kindFilter').value;
     const q = $('textFilter').value.trim().toLowerCase();
     const sessionId = $('sessionFilter').value;
+    const sessionOf = sessionId && window.CopilotOtel.sessionResolver(state.records);
     const matches = [];
     for (const r of state.records) {
       if (kind && r.kind !== kind) continue;
-      if (sessionId && r.resource && (r.resource['session.id'] || '(no session.id)') !== sessionId) continue;
+      if (sessionId && r.resource && sessionOf(r) !== sessionId) continue;
       if (q && !JSON.stringify(r).toLowerCase().includes(q)) continue;
       matches.push(r);
       if (matches.length >= 200) break;
@@ -441,7 +462,7 @@
   // Wiring
   // ---------------------------------------------------------------------------
 
-  $('sessionFilter').addEventListener('change', render);
+  $('sessionFilter').addEventListener('change', () => { renderSessionTags(); render(); });
   $('kindFilter').addEventListener('change', renderExplorer);
   let debounce;
   $('textFilter').addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(renderExplorer, 200); });

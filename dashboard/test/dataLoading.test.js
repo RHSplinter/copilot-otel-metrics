@@ -105,10 +105,15 @@ test('session dropdown prefixes model tags and retains session IDs as filter val
     hrTime: [1750000000, 0], _body: 'gen_ai.client.inference.operation.details',
     resource: { attributes: { 'session.id': `window-${i}` } },
     attributes: { 'event.name': 'gen_ai.client.inference.operation.details', 'gen_ai.request.model': model },
+  })).concat(JSON.stringify({
+    type: 'span', traceId: 't1', spanId: 's1', name: 'chat hydrafusion', startTime: [1750000001, 0], endTime: [1750000001, 0],
+    attributes: { 'gen_ai.conversation.id': 'cli-1', 'gen_ai.request.model': 'hydrafusion' },
+    resource: { attributes: { 'service.name': 'github-copilot' } },
   })).join('\n');
   const ui = dashboard(async url => {
     if (url === '/api/source') return { ok: true, json: async () => ({ path: 'models.jsonl', size: data.length, modified: 1 }) };
     if (url === '/api/names') return { ok: true, json: async () => ({ mcpServers: [] }) };
+    if (url === '/api/sessions') return { ok: true, json: async () => ({ sessions: { 'cli-1': { name: 'Fix login bug' } } }) };
     return { ok: true, text: async () => data };
   });
   await settle();
@@ -116,8 +121,14 @@ test('session dropdown prefixes model tags and retains session IDs as filter val
   assert.match(select.innerHTML, /value="window-0"[^>]*>\[HydraFusion\] window-0/);
   assert.match(select.innerHTML, /value="window-1"[^>]*>\[HydraFusion Max\] window-1/);
   assert.match(select.innerHTML, /value="window-2"[^>]*>window-2/);
+  assert.match(select.innerHTML, /value="cli-1"[^>]*>\[HydraFusion\] Fix login bug/);
+  select.value = 'cli-1';
+  select.change();
+  assert.equal(ui.get('sessionTags').innerHTML, '<span class="tag">HydraFusion</span>');
+  assert.equal(ui.window.__analysis.summary.spans, 1);
   select.value = 'window-1';
   select.change();
+  assert.equal(ui.get('sessionTags').innerHTML, '<span class="tag">HydraFusion Max</span>');
   assert.equal(ui.window.__analysis.summary.sessions, 1);
   await ui.get('reload').click();
   await settle();
@@ -147,6 +158,7 @@ test('dashboard loads once, reloads the server, and reloads a newly selected fil
   let data = '{}\n';
   const ui = dashboard(async (url, options) => {
     if (url === '/api/names') return { ok: true, json: async () => ({ mcpServers: [] }) };
+    if (url === '/api/sessions') return { ok: true, json: async () => ({ sessions: {} }) };
     calls.push({ url, options });
     return {
       ok: true,
@@ -209,7 +221,7 @@ test('read failures are visible, preserve loaded data, and allow retry', async (
 test('dropped file handles reload fresh data without switching back to the server', async () => {
   let serverCalls = 0;
   const ui = dashboard(async url => {
-    if (url !== '/api/names') serverCalls++;
+    if (url !== '/api/names' && url !== '/api/sessions') serverCalls++;
     return { ok: true, json: async () => ({ path: 'server.jsonl', size: 3, modified: 1 }), text: async () => '{}\n' };
   });
   await settle();

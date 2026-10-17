@@ -44,7 +44,8 @@ Read failures are displayed on the page; an already-loaded dashboard is preserve
 The dashboard shows KPIs, activity over time, tokens/latency per model, finish reasons and errors, tool usage,
 agent turns, agents/subagents/custom agents, skills, MCP servers and tool calls, permission requests, edits by
 language and acceptance, edit survival, feedback, a data inventory (every event, metric, attribute and resource
-attribute found) and a raw record explorer. Filter by VS Code window (`session.id`).
+attribute found) and a raw record explorer. Filter by VS Code window (`session.id`) or Copilot CLI session (`gen_ai.conversation.id`, titled from the local
+CLI session store); sessions that used HydraFusion or HydraFusion Max are tagged.
 
 Agents, skills and MCP data come from Copilot CLI / VS Code agent host spans. MCP server names are SHA-256 hashed
 in telemetry; the server resolves them by reading MCP server *names only* (never commands, URLs or env values) from
