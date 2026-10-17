@@ -34,10 +34,18 @@
     const o = opts || {};
     if (!rows.length || rows.every(r => r.values.every(v => !v))) { el.innerHTML = none(o.empty); return; }
     const max = Math.max(...rows.map(r => r.values.reduce((s, v) => s + (v || 0), 0))) || 1;
+    // independent: one bar per series, each scaled to that series' own maximum (for values of very different magnitude)
+    const seriesMax = series.map((_, i) => Math.max(...rows.map(r => r.values[i] || 0)) || 1);
     let html = series.length > 1 ? legend(series) : '';
+    if (o.independent) html += `<div class="muted scale-note">Separate scales · full bar = ${series.map((s, i) => `${esc(fmt(seriesMax[i]))} ${esc(s.label.split(' ')[0].toLowerCase())}`).join(' / ')}</div>`;
     html += '<div class="hbar">';
     for (const r of rows) {
       const total = r.values.reduce((s, v) => s + (v || 0), 0);
+      if (o.independent) {
+        const bars = r.values.map((v, i) => `<div class="track sub"><div class="seg" title="${esc(`${series[i].label}: ${fmt(v)}`)}" style="width:${(100 * (v || 0)) / seriesMax[i]}%;background:${series[i].color || COLORS[i % COLORS.length]}"></div></div>`).join('');
+        html += `<div class="lbl" title="${esc(r.label)}">${esc(r.label)}</div><div class="tracks">${bars}</div><div class="val">${r.text !== undefined ? r.text : esc(fmt(total))}</div>`;
+        continue;
+      }
       const segs = r.values.map((v, i) => {
         const tip = `${series[i].label}: ${fmt(v)}`;
         return `<div class="seg" title="${esc(tip)}" style="width:${(100 * (v || 0)) / max}%;background:${series[i].color || COLORS[i % COLORS.length]}"></div>`;
