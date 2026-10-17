@@ -47,7 +47,7 @@ attribute found) and a raw record explorer. Filter by VS Code window (`session.i
 
 Agents, skills and MCP data come from Copilot CLI / VS Code agent host spans. MCP server names are SHA-256 hashed
 in telemetry; the server resolves them by reading MCP server *names only* (never commands, URLs or env values) from
-your local Copilot CLI and VS Code MCP configs (`GET /api/names`). See [docs](docs/otel-data-schema.md#copilot-cli-and-vs-code-agent-host).
+your local Copilot CLI and VS Code MCP configs and installed VS Code extensions (`GET /api/names`). See [docs](docs/otel-data-schema.md#copilot-cli-and-vs-code-agent-host).
 
 ## Sample data
 

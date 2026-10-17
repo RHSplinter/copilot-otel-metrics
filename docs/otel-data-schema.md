@@ -97,8 +97,9 @@ the file export these spans are `{}`; VS Code MCP tools appear in tool events as
 **Resolving hashed names.** MCP server, tool and external tool names are SHA-256 hashes. The parser hashes candidate
 names and matches them: well-known names (GitHub MCP server and its tools, bundled plugins), plain tool names and
 tool definitions found in the file, and — when served by `scripts/serve.js` — MCP server *names* (keys only) from local
-configs: `~/.copilot/mcp-config.json`, Copilot CLI plugin `mcp.json` files, VS Code user/profile `mcp.json` and
-agent plugins. Unresolved names are shown as a short hash.
+configs: `~/.copilot/mcp-config.json`, Copilot CLI plugin `mcp.json` files, VS Code user/profile `mcp.json`, agent
+plugins, and the `mcpServerDefinitionProviders` labels of installed VS Code extensions (localized via `package.nls.json`).
+Unresolved names are shown as a short hash.
 
 When a file contains both VS Code events and spans for the same service, only events are counted for LLM calls and
 tools (to avoid double counting); services that emit only spans (the CLI) are counted from spans.

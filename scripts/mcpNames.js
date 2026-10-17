@@ -46,13 +46,44 @@ function mcpConfigFiles({ home = os.homedir(), platform = process.platform, env 
 
 const stripJsonComments = text => text.replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str || '');
 
-/** Returns the sorted, de-duplicated MCP server names found in local configs. */
+const readJson = file => JSON.parse(stripJsonComments(fs.readFileSync(file, 'utf8')).replace(/,(\s*[}\]])/g, '$1'));
+
+/** Labels of MCP servers contributed by installed VS Code extensions (contributes.mcpServerDefinitionProviders). */
+function extensionMcpLabels({ home = os.homedir() } = {}) {
+  const labels = [];
+  for (const dir of ['.vscode', '.vscode-insiders', '.vscode-server', '.vscode-server-insiders', '.vscode-oss']) {
+    const extRoot = path.join(home, dir, 'extensions');
+    let exts;
+    try { exts = fs.readdirSync(extRoot); } catch (_) { continue; }
+    for (const ext of exts) {
+      let pkg;
+      try { pkg = readJson(path.join(extRoot, ext, 'package.json')); } catch (_) { continue; }
+      const providers = pkg && pkg.contributes && pkg.contributes.mcpServerDefinitionProviders;
+      if (!Array.isArray(providers)) continue;
+      let nls = null;
+      for (const p of providers) {
+        let label = p && p.label;
+        if (typeof label !== 'string') continue;
+        const key = /^%(.+)%$/.exec(label);
+        if (key) {
+          if (nls === null) { try { nls = readJson(path.join(extRoot, ext, 'package.nls.json')); } catch (_) { nls = {}; } }
+          const v = nls[key[1]];
+          label = typeof v === 'string' ? v : v && typeof v.message === 'string' ? v.message : '';
+        }
+        if (label) labels.push(label);
+      }
+    }
+  }
+  return labels;
+}
+
+/** Returns the sorted, de-duplicated MCP server names found in local configs and installed VS Code extensions. */
 function readMcpServerNames(options) {
-  const names = new Set();
+  const names = new Set(extensionMcpLabels(options));
   for (const file of mcpConfigFiles(options)) {
     let json;
     try {
-      json = JSON.parse(stripJsonComments(fs.readFileSync(file, 'utf8')).replace(/,(\s*[}\]])/g, '$1'));
+      json = readJson(file);
     } catch (_) { continue; }
     for (const key of ['mcpServers', 'servers']) {
       const servers = json && json[key];
@@ -62,4 +93,4 @@ function readMcpServerNames(options) {
   return [...names].sort();
 }
 
-module.exports = { readMcpServerNames, mcpConfigFiles };
+module.exports = { readMcpServerNames, mcpConfigFiles, extensionMcpLabels };

@@ -106,8 +106,12 @@ test('readMcpServerNames returns only server names from Copilot CLI and VS Code 
     fs.mkdirSync(user, { recursive: true });
     fs.writeFileSync(path.join(user, 'mcp.json'), '{\n // comment with "quotes"\n "servers": { "vscode-server": { "url": "https://x//y" }, },\n}');
     fs.writeFileSync(path.join(home, 'broken.json'), '{');
+    const ext = path.join(home, '.vscode', 'extensions', 'pub.azure-1.0.0');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'package.json'), JSON.stringify({ contributes: { mcpServerDefinitionProviders: [{ id: 'a', label: '%mcp.label%' }, { id: 'b', label: 'Plain Label' }] } }));
+    fs.writeFileSync(path.join(ext, 'package.nls.json'), JSON.stringify({ 'mcp.label': 'Copilot Azure Resources Extension Tools' }));
     const names = readMcpServerNames({ home, platform: 'linux', env: {}, cwd: home });
-    assert.deepEqual(names, ['cli-server', 'computer-use', 'vscode-server']);
+    assert.deepEqual(names, ['cli-server', 'computer-use', 'Copilot Azure Resources Extension Tools', 'Plain Label', 'vscode-server'].sort());
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
