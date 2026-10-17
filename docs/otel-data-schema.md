@@ -34,6 +34,8 @@ without it inherit it through their `traceId`. The dashboard lists each conversa
 `name` / `repository` / `branch` in that folder's `workspace.yaml` (`GET /api/sessions`, server mode only).
 Metrics are aggregated across sessions and stay under `(no session.id)`.
 
+Sessions are ordered by their latest recorded activity, newest first; sessions without timestamps appear last.
+
 The session dropdown adds `[HydraFusion]` / `[HydraFusion Max]` tags (and pill badges for the selected session) when
 the session's spans or logs have `gen_ai.request.model` or `gen_ai.response.model` equal to `hydrafusion` /
 `hydrafusion-max`. Both tags appear if both models were used.

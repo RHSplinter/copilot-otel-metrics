@@ -587,7 +587,7 @@
         }
       }
     }
-    const list = [...sessions.values()].sort((a, b) => (a.first || 0) - (b.first || 0));
+    const list = [...sessions.values()].sort((a, b) => (b.last ?? -Infinity) - (a.last ?? -Infinity));
     for (const s of list) {
       s.tags.sort();
       const repos = Object.keys(s.repos).sort((x, y) => s.repos[y] - s.repos[x]);

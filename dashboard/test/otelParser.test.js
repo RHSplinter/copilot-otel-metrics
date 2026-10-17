@@ -132,6 +132,20 @@ test('tags sessions with HydraFusion models without changing labels or mixing se
   assert.equal(sessions.fusion.label, 'fusion');
 });
 
+test('orders sessions by latest activity first, with undated sessions last', () => {
+  const record = (id, time) => ({
+    kind: 'log', resource: { 'session.id': id }, attributes: {}, time,
+  });
+  const records = [
+    record('undated'),
+    record('resumed', 100),
+    record('newer-start', 200),
+    record('resumed', 300),
+  ];
+  assert.deepEqual(P.listSessions(records).map(s => s.id), ['resumed', 'newer-start', 'undated']);
+  assert.deepEqual(P.listSessions([...records].reverse()).map(s => s.id), ['resumed', 'newer-start', 'undated']);
+});
+
 test('splits Copilot CLI records per conversation, tags HydraFusion and uses CLI session titles', () => {
   const res = { attributes: { 'service.name': 'github-copilot', 'service.version': '1.0.95' } };
   const span = (traceId, name, attributes) => ({ type: 'span', traceId, spanId: name + traceId, name, startTime: [1791969299, 0], endTime: [1791969300, 0], attributes, resource: res });
