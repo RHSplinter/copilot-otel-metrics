@@ -1,0 +1,16 @@
+{
+  "name": "copilot-otel-metrics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Explore and visualize GitHub Copilot Chat OpenTelemetry (OTEL) file-exporter data. Groundwork for a VS Code extension.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "inspect": "node scripts/inspect.js",
+    "generate-sample": "node scripts/generate-sample-data.js",
+    "test": "node --test"
+  }
+}

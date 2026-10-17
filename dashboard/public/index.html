@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Copilot OTel Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <h1>GitHub Copilot · OpenTelemetry</h1>
+      <div id="source" class="muted">No data loaded</div>
+    </div>
+    <div class="controls">
+      <label>Window / session
+        <select id="sessionFilter"><option value="">All sessions</option></select>
+        <span id="sessionTags" class="tags"></span>
+      </label>
+      <label id="openFile" class="button" for="fileInput">Open JSONL…</label>
+      <input type="file" id="fileInput" accept=".jsonl,.json,.ndjson,.log,.txt" hidden />
+      <button id="reload" type="button">Reload</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div id="loadError" class="notice" role="alert" hidden></div>
+    <div id="notices"></div>
+
+    <section id="loading" class="card loading" role="status" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>
+        <h2 id="loadingTitle">Loading data…</h2>
+        <div id="loadingDetail" class="muted"></div>
+      </div>
+    </section>
+
+    <section id="empty" class="card empty" hidden>
+      <h2>Drop a <code>copilot-otel.jsonl</code> file here</h2>
+      <p>Or start the local server with <code>npm start</code> to load <code>.copilot/otel/copilot-otel.jsonl</code> from your user profile automatically when present.</p>
+    </section>
+
+    <div id="content" hidden>
+      <section class="kpis" id="kpis"></section>
+
+      <section class="card">
+        <h2>Activity over time <span class="muted" id="bucketLabel"></span></h2>
+        <div id="timeline" class="chart"></div>
+      </section>
+
+      <div class="grid two">
+        <section class="card">
+          <h2>Tokens by model <span class="badge" id="llmSource"></span></h2>
+          <div id="tokensByModel"></div>
+        </section>
+        <section class="card">
+          <h2>LLM latency by model</h2>
+          <div id="latency"></div>
+        </section>
+      </div>
+
+      <div class="grid three">
+        <section class="card">
+          <h2>LLM calls by model</h2>
+          <div id="callsByModel"></div>
+        </section>
+        <section class="card">
+          <h2>Finish reasons</h2>
+          <div id="finishReasons"></div>
+        </section>
+        <section class="card">
+          <h2>Errors</h2>
+          <div id="errors"></div>
+        </section>
+      </div>
+
+      <section class="card">
+        <h2>Tool usage <span class="badge" id="toolSource"></span></h2>
+        <div class="grid two inner">
+          <div id="toolCalls"></div>
+          <div id="toolTable"></div>
+        </div>
+      </section>
+
+      <div class="grid three">
+        <section class="card">
+          <h2>Agent invocations</h2>
+          <div id="agentStats"></div>
+        </section>
+        <section class="card">
+          <h2>Tool calls per agent turn</h2>
+          <div id="toolsPerTurn"></div>
+        </section>
+        <section class="card">
+          <h2>Chat sessions by model</h2>
+          <div id="chatSessions"></div>
+        </section>
+      </div>
+
+      <h2 class="section-title">Agents, skills &amp; MCP servers <span class="muted" id="capContext"></span></h2>
+      <section class="card">
+        <h2>Agents</h2>
+        <div id="capAgents"></div>
+      </section>
+      <div class="grid two">
+        <section class="card">
+          <h2>Skills</h2>
+          <div id="capSkills"></div>
+          <div id="capSkillsUnused"></div>
+        </section>
+        <section class="card">
+          <h2>MCP servers</h2>
+          <div id="capMcp"></div>
+          <div id="mcpConnections"></div>
+        </section>
+      </div>
+      <div class="grid two">
+        <section class="card">
+          <h2>MCP tool calls</h2>
+          <div id="mcpTools"></div>
+        </section>
+        <section class="card">
+          <h2>LLM calls by agent</h2>
+          <div id="llmByAgent"></div>
+        </section>
+      </div>
+      <div class="grid three">
+        <section class="card">
+          <h2>Custom agents</h2>
+          <div id="capCustomAgents"></div>
+        </section>
+        <section class="card">
+          <h2>Permission requests</h2>
+          <div id="permissions"></div>
+        </section>
+        <section class="card">
+          <h2>Capability loading at session start</h2>
+          <div id="capTimings"></div>
+        </section>
+      </div>
+
+      <div class="grid two">
+        <section class="card">
+          <h2>Code edits by language</h2>
+          <div id="editsByLanguage"></div>
+        </section>
+        <section class="card">
+          <h2>Edit decisions</h2>
+          <div id="editOutcomes"></div>
+        </section>
+      </div>
+
+      <div class="grid two">
+        <section class="card">
+          <h2>Edit survival over time</h2>
+          <div id="survival"></div>
+        </section>
+        <section class="card">
+          <h2>User feedback &amp; actions</h2>
+          <div id="feedback"></div>
+        </section>
+      </div>
+
+      <section class="card">
+        <h2>Data inventory</h2>
+        <p class="muted">Everything discovered in the file: record types, event names, metric instruments, spans and their attributes.</p>
+        <div class="grid two inner">
+          <div id="recordTypes"></div>
+          <div id="resourceAttrs"></div>
+        </div>
+        <h3>Events (log records)</h3>
+        <div id="eventCatalog"></div>
+        <h3>Metrics</h3>
+        <div id="metricCatalog"></div>
+        <h3>Spans</h3>
+        <div id="spanCatalog"></div>
+        <h3>Windows / sessions (resource <code>session.id</code>)</h3>
+        <div id="sessions"></div>
+      </section>
+
+      <section class="card">
+        <h2>Record explorer</h2>
+        <div class="explorer-controls">
+          <select id="kindFilter">
+            <option value="">All kinds</option>
+            <option value="log">Events (log)</option>
+            <option value="metric">Metric points</option>
+            <option value="span">Spans</option>
+            <option value="lostSpan">Lost spans {}</option>
+          </select>
+          <input id="textFilter" type="search" placeholder="Filter by name or attribute value…" />
+          <span class="muted" id="explorerCount"></span>
+        </div>
+        <div id="explorer"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="otelParser.js"></script>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
