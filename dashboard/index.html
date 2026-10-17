@@ -16,18 +16,27 @@
       <label>Window / session
         <select id="sessionFilter"><option value="">All sessions</option></select>
       </label>
-      <label class="button" for="fileInput">Open JSONL…</label>
+      <label id="openFile" class="button" for="fileInput">Open JSONL…</label>
       <input type="file" id="fileInput" accept=".jsonl,.json,.ndjson,.log,.txt" hidden />
       <button id="reload" type="button">Reload</button>
     </div>
   </header>
 
   <main id="main">
+    <div id="loadError" class="notice" role="alert" hidden></div>
     <div id="notices"></div>
 
-    <section id="empty" class="card empty">
+    <section id="loading" class="card loading" role="status" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>
+        <h2 id="loadingTitle">Loading data…</h2>
+        <div id="loadingDetail" class="muted"></div>
+      </div>
+    </section>
+
+    <section id="empty" class="card empty" hidden>
       <h2>Drop a <code>copilot-otel.jsonl</code> file here</h2>
-      <p>Or start the local server with <code>npm start</code> to load <code>data/copilot-otel.jsonl</code> automatically.</p>
+      <p>Or start the local server with <code>npm start</code> to load <code>.copilot/otel/copilot-otel.jsonl</code> from your user profile automatically when present.</p>
     </section>
 
     <div id="content" hidden>
@@ -84,6 +93,48 @@
         <section class="card">
           <h2>Chat sessions by model</h2>
           <div id="chatSessions"></div>
+        </section>
+      </div>
+
+      <h2 class="section-title">Agents, skills &amp; MCP servers <span class="muted" id="capContext"></span></h2>
+      <section class="card">
+        <h2>Agents</h2>
+        <div id="capAgents"></div>
+      </section>
+      <div class="grid two">
+        <section class="card">
+          <h2>Skills</h2>
+          <div id="capSkills"></div>
+          <div id="capSkillsUnused"></div>
+        </section>
+        <section class="card">
+          <h2>MCP servers</h2>
+          <div id="capMcp"></div>
+          <div id="mcpConnections"></div>
+        </section>
+      </div>
+      <div class="grid two">
+        <section class="card">
+          <h2>MCP tool calls</h2>
+          <div id="mcpTools"></div>
+        </section>
+        <section class="card">
+          <h2>LLM calls by agent</h2>
+          <div id="llmByAgent"></div>
+        </section>
+      </div>
+      <div class="grid three">
+        <section class="card">
+          <h2>Custom agents</h2>
+          <div id="capCustomAgents"></div>
+        </section>
+        <section class="card">
+          <h2>Permission requests</h2>
+          <div id="permissions"></div>
+        </section>
+        <section class="card">
+          <h2>Capability loading at session start</h2>
+          <div id="capTimings"></div>
         </section>
       </div>
 

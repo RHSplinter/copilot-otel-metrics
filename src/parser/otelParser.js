@@ -99,6 +99,56 @@
     return out;
   }
 
+  // --- SHA-256 (synchronous, so hashed MCP/tool names can be resolved in Node and browsers alike)
+
+  let SHA_K, SHA_H0;
+  const ror = (x, n) => (x >>> n) | (x << (32 - n));
+
+  function shaInit() {
+    SHA_K = []; SHA_H0 = [];
+    const frac = x => ((x - Math.floor(x)) * 0x100000000) >>> 0;
+    for (let n = 2; SHA_K.length < 64; n++) {
+      let prime = true;
+      for (let d = 2; d * d <= n; d++) if (n % d === 0) { prime = false; break; }
+      if (!prime) continue;
+      if (SHA_H0.length < 8) SHA_H0.push(frac(Math.sqrt(n)));
+      SHA_K.push(frac(Math.cbrt(n)));
+    }
+  }
+
+  /** Hex SHA-256 of the UTF-8 encoding of `str`. */
+  function sha256Hex(str) {
+    if (!SHA_K) shaInit();
+    const msg = new TextEncoder().encode(String(str));
+    const total = ((msg.length + 9 + 63) >> 6) << 6;
+    const buf = new Uint8Array(total);
+    buf.set(msg);
+    buf[msg.length] = 0x80;
+    const dv = new DataView(buf.buffer);
+    const bits = msg.length * 8;
+    dv.setUint32(total - 8, Math.floor(bits / 0x100000000));
+    dv.setUint32(total - 4, bits >>> 0);
+    const H = SHA_H0.slice();
+    const W = new Uint32Array(64);
+    for (let off = 0; off < total; off += 64) {
+      for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4);
+      for (let i = 16; i < 64; i++) {
+        const s0 = ror(W[i - 15], 7) ^ ror(W[i - 15], 18) ^ (W[i - 15] >>> 3);
+        const s1 = ror(W[i - 2], 17) ^ ror(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+        W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+      }
+      let [a, b, c, d, e, f, g, h] = H;
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + (ror(e, 6) ^ ror(e, 11) ^ ror(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
+        const t2 = ((ror(a, 2) ^ ror(a, 13) ^ ror(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+      H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    }
+    return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+  }
+
   // ---------------------------------------------------------------------------
   // Normalization: raw JSON object -> normalized records
   // ---------------------------------------------------------------------------
@@ -217,6 +267,36 @@
     return out;
   }
 
+  /**
+   * Copilot CLI / VS Code agent host file exporter: one metric per line,
+   * `{ type: 'metric', name, description, unit, dataPoints: [{ attributes, startTime, endTime, value }], resource: { attributes } }`.
+   * Points are cumulative (constant startTime across exports).
+   */
+  function normalizeCliMetric(o, line) {
+    const resource = resourceAttributes(o.resource);
+    let type = SDK_DATA_POINT_TYPE[o.dataPointType];
+    if (!type && typeof o.dataPointType === 'string') type = o.dataPointType.toLowerCase();
+    const temporality = o.aggregationTemporality === 0 || o.aggregationTemporality === 'delta' ? 'delta' : 'cumulative';
+    return o.dataPoints.map(dp => {
+      const t = type || (isObject(dp.value) ? 'histogram' : 'sum');
+      return {
+        kind: 'metric',
+        line,
+        name: o.name,
+        unit: o.unit || '',
+        description: o.description || '',
+        type: t,
+        temporality,
+        isMonotonic: o.isMonotonic,
+        attributes: isObject(dp.attributes) ? dp.attributes : {},
+        resource,
+        start: toMs(dp.startTime),
+        end: toMs(dp.endTime),
+        value: sdkMetricValue(dp, t),
+      };
+    });
+  }
+
   // --- OTLP/JSON -------------------------------------------------------------
 
   function normalizeOtlp(o, line) {
@@ -289,6 +369,7 @@
     if (Object.keys(o).length === 0) return [{ kind: 'lostSpan', line }];
     if (o.resourceSpans || o.resourceLogs || o.resourceMetrics) return normalizeOtlp(o, line);
     if (Array.isArray(o.scopeMetrics)) return normalizeSdkResourceMetrics(o, line);
+    if (o.type === 'metric' && typeof o.name === 'string' && Array.isArray(o.dataPoints)) return normalizeCliMetric(o, line);
     const looksLikeSpan = typeof o.name === 'string' && o.startTime !== undefined &&
       (o.spanId || o._spanContext || o.spanContext || o.kind !== undefined);
     if (looksLikeSpan) return [normalizeSdkSpan(o, line)];
@@ -496,6 +577,10 @@
     return list;
   }
 
+  function sourceLabel(events, spans) {
+    return events && spans ? 'events + spans' : events ? 'events' : spans ? 'spans' : 'metrics';
+  }
+
   function histTotals(list) {
     return list.reduce((acc, a) => ({
       count: acc.count + num(a.value && a.value.count),
@@ -504,10 +589,235 @@
     }), { count: 0, sum: 0, max: 0 });
   }
 
+  // ---------------------------------------------------------------------------
+  // Hashed names (Copilot CLI reports MCP server / MCP tool / permission tool names as sha256(name))
+  // ---------------------------------------------------------------------------
+
+  const HASH_RE = /^[0-9a-f]{64}$/;
+  const HASHED_TOOL_RE = /^([0-9a-f]{64})\/([0-9a-f]{64})$/;
+  // Well-known MCP server and tool names tried when resolving hashes (extend via options.knownNames).
+  const KNOWN_NAMES = [
+    'github-mcp-server', 'github', 'GitHub', 'playwright', 'context7', 'io.github.upstash/context7', 'Azure MCP', 'azure',
+    'microsoft-docs', 'microsoft.docs.mcp', 'fetch', 'filesystem', 'memory', 'sequential-thinking', 'git', 'time',
+    'web_search', 'get_me', 'get_file_contents', 'search_code', 'search_repositories', 'search_users', 'search_orgs',
+    'search_issues', 'search_pull_requests', 'list_issues', 'issue_read', 'issue_write', 'add_issue_comment', 'sub_issue_write',
+    'list_pull_requests', 'pull_request_read', 'create_pull_request', 'update_pull_request', 'merge_pull_request',
+    'pull_request_review_write', 'request_copilot_review', 'list_commits', 'get_commit', 'list_branches', 'create_branch',
+    'list_tags', 'get_tag', 'list_releases', 'get_latest_release', 'get_release_by_tag', 'create_or_update_file', 'push_files',
+    'delete_file', 'fork_repository', 'create_repository', 'get_repository_tree', 'list_workflows', 'actions_list', 'actions_get',
+    'actions_run_trigger', 'get_job_logs', 'list_notifications', 'list_discussions', 'get_discussion', 'get_label', 'list_issue_types',
+    'list_code_scanning_alerts', 'get_code_scanning_alert', 'list_secret_scanning_alerts', 'list_dependabot_alerts',
+    'list_gists', 'get_gist', 'get_copilot_space', 'list_copilot_spaces', 'assign_copilot_to_issue', 'get_teams', 'get_team_members',
+    'list_starred_repositories', 'projects_list', 'projects_get', 'search_commits',
+    // MCP servers contributed by Copilot CLI plugins / VS Code extensions
+    'computer-use', 'browser-use', 'pylance mcp server', 'NuGet',
+    // host-provided ("external") tools of Copilot apps
+    'ask_user', 'task_complete', 'open_canvas', 'invoke_canvas_action', 'list_canvas_capabilities', 'create_session',
+    'send_session_message', 'rename_session', 'rename_branch', 'create_pull_request', 'create_issue', 'render_widget',
+    'discover_widgets', 'list_projects', 'list_sessions_and_chats', 'get_sessions_status', 'get_session', 'navigate_to',
+    'fork_session', 'archive_session', 'query_library', 'add_to_library',
+  ];
+
+  function parseList(v) {
+    if (Array.isArray(v)) return v.map(String);
+    if (typeof v !== 'string' || !v) return [];
+    try { const p = JSON.parse(v); return Array.isArray(p) ? p.map(String) : [String(p)]; } catch (_) { return [v]; }
+  }
+
+  /**
+   * Returns `resolve(hash) -> name | undefined`. Candidates: well-known names, `extraNames` (e.g. from local MCP configs)
+   * and plain tool names found in the data (`gen_ai.tool.definitions`, `gen_ai.tool.name`). Built lazily.
+   */
+  function createNameResolver(records, extraNames) {
+    let map;
+    const build = () => {
+      map = new Map();
+      const candidates = new Set(KNOWN_NAMES);
+      for (const n of extraNames || []) if (typeof n === 'string' && n) candidates.add(n);
+      const defs = new Set();
+      for (const r of records) {
+        const a = r.attributes;
+        if (!a) continue;
+        if (typeof a[TOOL] === 'string' && !HASH_RE.test(a[TOOL]) && !HASHED_TOOL_RE.test(a[TOOL])) candidates.add(a[TOOL]);
+        if (typeof a['gen_ai.tool.definitions'] === 'string') defs.add(a['gen_ai.tool.definitions']);
+      }
+      for (const d of defs) {
+        let list;
+        try { list = JSON.parse(d); } catch (_) { continue; }
+        if (!Array.isArray(list)) continue;
+        for (const t of list) {
+          const n = t && (t.name || (t.function && t.function.name));
+          if (typeof n !== 'string') continue;
+          candidates.add(n);
+          // Copilot CLI exposes MCP tools as "<server>-<tool>"
+          const i = n.indexOf('-');
+          if (i > 0) { candidates.add(n.slice(0, i)); candidates.add(n.slice(i + 1)); }
+        }
+      }
+      for (const c of candidates) map.set(sha256Hex(c), c);
+    };
+    return h => {
+      if (typeof h !== 'string' || !HASH_RE.test(h)) return undefined;
+      if (!map) build();
+      return map.get(h);
+    };
+  }
+
+  const shortHash = h => h.slice(0, 8) + '…';
+
+  /** Display name for a possibly hashed tool name ("<serverHash>/<toolHash>" or "<hash>"). */
+  function toolDisplayName(name, resolve) {
+    if (typeof name !== 'string') return 'unknown';
+    const m = name.match(HASHED_TOOL_RE);
+    if (m) return (resolve(m[1]) || shortHash(m[1])) + '/' + (resolve(m[2]) || shortHash(m[2]));
+    if (HASH_RE.test(name)) return resolve(name) || shortHash(name);
+    return name;
+  }
+
+  /** Agents, skills, custom agents, MCP servers, permissions and startup timings (mostly from Copilot CLI spans). */
+  function analyzeCapabilities(spans, toolItems, aggregated, resolve) {
+    const spanById = new Map();
+    for (const s of spans) if (s.spanId) spanById.set(s.spanId, s);
+    const conversationOf = s => s.attributes['gen_ai.conversation.id'] || s.traceId || s.spanId;
+    const statEntry = () => ({ count: 0, totalMs: 0, maxMs: 0, failures: 0 });
+    const addStat = (e, s) => {
+      e.count++;
+      e.totalMs += num(s.durationMs); e.maxMs = Math.max(e.maxMs, num(s.durationMs));
+      if (s.attributes['error.type'] || (s.status && s.status.code === 2)) e.failures++;
+    };
+    const finishStat = e => Object.assign(e, { avgMs: e.count ? e.totalMs / e.count : undefined });
+
+    // Availability snapshots (what was loaded when the agent was invoked), counted per conversation
+    const contextConversations = new Set();
+    const avail = { skills: new Map(), customAgents: new Map(), mcp: new Map() };
+    const addAvail = (map, name, conv) => { if (!map.has(name)) map.set(name, new Set()); map.get(name).add(conv); };
+
+    const agents = {};
+    for (const s of spans) {
+      if (s.attributes[OP] !== 'invoke_agent' && !/^invoke_agent\b/.test(s.name || '')) continue;
+      const a = s.attributes;
+      const conv = conversationOf(s);
+      const ctx = ['github.copilot.context.skills', 'github.copilot.context.custom_agent_names', 'github.copilot.context.mcp_server_names'];
+      if (ctx.some(k => k in a)) {
+        contextConversations.add(conv);
+        for (const n of parseList(a['github.copilot.context.skills'])) addAvail(avail.skills, n, conv);
+        for (const n of parseList(a['github.copilot.context.custom_agent_names'])) addAvail(avail.customAgents, n, conv);
+        for (const n of parseList(a['github.copilot.context.mcp_server_names'])) addAvail(avail.mcp, n, conv);
+      }
+      const svc = s.resource && s.resource['service.name'];
+      const name = a['gen_ai.agent.name'] || ((s.name || '').match(/^invoke_agent (.+)$/) || [])[1] ||
+        (svc === 'github-copilot' ? (s.resource['service.namespace'] === 'vscode.agent-host' ? 'Copilot CLI (VS Code agent host)' : 'Copilot CLI') : svc || 'agent');
+      const parent = s.parentSpanId && spanById.get(s.parentSpanId);
+      const subagent = !!parent && (parent.attributes[OP] === 'invoke_agent' || /^invoke_agent\b/.test(parent.name || ''));
+      const e = agents[name] || (agents[name] = Object.assign(statEntry(), { name, subagent: false, kinds: {}, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, turns: 0, cost: 0 }));
+      addStat(e, s);
+      if (subagent) e.subagent = true;
+      if (a['github.copilot.agent.type']) inc(e.kinds, a['github.copilot.agent.type']);
+      e.inputTokens += num(a[IN_TOK]);
+      e.outputTokens += num(a[OUT_TOK]);
+      e.cacheReadTokens += num(a['gen_ai.usage.cache_read.input_tokens']);
+      e.turns += num(a['github.copilot.turn_count']);
+      e.cost += num(a['github.copilot.cost']);
+    }
+    const customNames = new Set(avail.customAgents.keys());
+    const agentList = Object.values(agents).map(e => Object.assign(finishStat(e), {
+      kind: topKey(e.kinds), custom: customNames.has(e.name),
+    })).sort((x, y) => y.count - x.count);
+
+    // LLM calls attributed to (internal) agent names, e.g. panel/editAgent, title, XtabProvider. Only chat spans carry
+    // the name (inference events do not), so every chat span counts here.
+    const llmCallsByAgent = {};
+    for (const s of spans) if (s.attributes[OP] === 'chat' && s.attributes['gen_ai.agent.name']) inc(llmCallsByAgent, s.attributes['gen_ai.agent.name']);
+
+    // Skills
+    const skills = {};
+    for (const s of spans) {
+      const m = (s.name || '').match(/^execute_tool skill (.+)$/);
+      const name = s.attributes['gen_ai.skill.name'] || (m && m[1]);
+      if (!name) continue;
+      addStat(skills[name] || (skills[name] = statEntry()), s);
+    }
+    for (const n of avail.skills.keys()) if (!skills[n]) skills[n] = statEntry();
+    const skillList = Object.entries(skills).map(([name, e]) => Object.assign(finishStat(e), {
+      name, availableIn: avail.skills.has(name) ? avail.skills.get(name).size : 0,
+    })).sort((x, y) => y.count - x.count || y.availableIn - x.availableIn || x.name.localeCompare(y.name));
+
+    const customAgentList = [...avail.customAgents.entries()].map(([name, convs]) => ({
+      name, availableIn: convs.size, invocations: agents[name] ? agents[name].count : 0,
+    })).sort((x, y) => y.invocations - x.invocations || x.name.localeCompare(y.name));
+
+    // MCP servers: hashed CLI tool names ("<server>/<tool>") or VS Code "mcp_*" tool names
+    const servers = {};
+    const serverEntry = (id, name, resolved) => servers[id] || (servers[id] = { id, name, resolved, availableIn: 0, calls: 0, failures: 0, totalMs: 0, tools: {} });
+    const hashedServer = h => serverEntry(h, resolve(h) || shortHash(h), !!resolve(h));
+    for (const [h, convs] of avail.mcp) {
+      (HASH_RE.test(h) ? hashedServer(h) : serverEntry(h, h, true)).availableIn = convs.size;
+    }
+    for (const t of toolItems) {
+      const a = t.attributes || {};
+      const m = typeof t.name === 'string' && t.name.match(HASHED_TOOL_RE);
+      const serverHash = a['github.copilot.tool.parameters.mcp_server_name_hash'] || (m && m[1]);
+      let srv, tool;
+      if (serverHash) {
+        srv = HASH_RE.test(serverHash) ? hashedServer(serverHash) : serverEntry(serverHash, serverHash, true);
+        tool = m ? resolve(m[2]) || shortHash(m[2]) : toolDisplayName(t.name, resolve);
+      } else if (typeof t.name === 'string' && t.name.startsWith('mcp_')) {
+        srv = serverEntry('vscode-mcp', 'VS Code MCP tools', true);
+        tool = t.name;
+      } else continue;
+      srv.calls++; srv.totalMs += t.ms || 0;
+      if (t.failed) srv.failures++;
+      const te = srv.tools[tool] || (srv.tools[tool] = { name: tool, calls: 0, failures: 0 });
+      te.calls++; if (t.failed) te.failures++;
+    }
+    const serverList = Object.values(servers).map(s => Object.assign(s, {
+      avgMs: s.calls ? s.totalMs / s.calls : undefined,
+      tools: Object.values(s.tools).sort((x, y) => y.calls - x.calls),
+    })).sort((x, y) => y.calls - x.calls || y.availableIn - x.availableIn);
+
+    const connections = {};
+    for (const a of aggregated) if (a.name === 'github.copilot.mcp.server.connection.count') inc(connections, a.attributes.outcome || 'unknown', num(a.value));
+
+    // Permission requests (Copilot CLI): kind x result
+    const permissions = {};
+    const permissionResults = {};
+    for (const s of spans) {
+      const a = s.attributes;
+      if (s.name !== 'permission' && !('github.copilot.permission.kind' in a)) continue;
+      const kind = a['github.copilot.permission.kind'] || 'unknown';
+      const result = a['github.copilot.permission.result'] || 'unknown';
+      const e = permissions[kind] || (permissions[kind] = { kind, approved: 0, denied: 0, other: 0 });
+      if (/^approved/.test(result)) e.approved++; else if (/^denied/.test(result)) e.denied++; else e.other++;
+      inc(permissionResults, result);
+    }
+
+    // Session startup phases that load capabilities (session.timing.* / session.mcp_startup_wait spans)
+    const timings = {};
+    for (const s of spans) {
+      if (!/^session\.(timing\.|mcp_startup_wait$)/.test(s.name || '') || !/mcp|skill|custom_agent|plugin|lsp|external_tool/.test(s.name)) continue;
+      addStat(timings[s.name] || (timings[s.name] = statEntry()), s);
+    }
+    const startupTimings = Object.entries(timings).map(([name, e]) => Object.assign(finishStat(e), { name: name.replace(/^session\.(timing\.)?/, '') }))
+      .sort((x, y) => y.totalMs - x.totalMs);
+
+    return {
+      contextConversations: contextConversations.size,
+      agents: agentList,
+      llmCallsByAgent,
+      skills: skillList,
+      customAgents: customAgentList,
+      mcp: { servers: serverList, connections },
+      permissions: Object.values(permissions).sort((x, y) => (y.approved + y.denied + y.other) - (x.approved + x.denied + x.other)),
+      permissionResults,
+      startupTimings,
+    };
+  }
+
   /**
    * Builds dashboard-ready statistics from normalized records.
    * @param {object[]} allRecords output of parseJsonl().records
-   * @param {{ sessionId?: string }} [options] optional filter on resource `session.id`
+   * @param {{ sessionId?: string, knownNames?: string[] }} [options] optional filter on resource `session.id`;
+   *   `knownNames` are extra plain names (e.g. MCP servers from local configs) used to resolve sha256-hashed names
    */
   function analyze(allRecords, options) {
     const opts = options || {};
@@ -562,13 +872,15 @@
       }
     }
 
-    // --- LLM usage (prefer per-call events, then spans, then aggregate metrics)
+    // --- LLM usage (prefer per-call events, then spans, then aggregate metrics). Services that emit events also emit
+    // spans for the same calls, so spans are only used for services without events (e.g. Copilot CLI next to VS Code).
+    const serviceOf = r => r.resource && r.resource['service.name'];
     const inferenceEvents = logs.filter(l => l.name === 'gen_ai.client.inference.operation.details');
-    const chatSpans = spans.filter(s => s.attributes[OP] === 'chat');
-    const llmSource = inferenceEvents.length ? 'events' : chatSpans.length ? 'spans' : 'metrics';
-    const llmItems = llmSource === 'events'
-      ? inferenceEvents.map(e => ({ t: e.time, a: e.attributes }))
-      : chatSpans.map(s => ({ t: s.start, a: s.attributes }));
+    const llmEventServices = new Set(inferenceEvents.map(serviceOf));
+    const chatSpans = spans.filter(s => s.attributes[OP] === 'chat' && !llmEventServices.has(serviceOf(s)));
+    const llmSource = sourceLabel(inferenceEvents.length, chatSpans.length);
+    const llmItems = inferenceEvents.map(e => ({ t: e.time, a: e.attributes }))
+      .concat(chatSpans.map(s => ({ t: s.start, a: s.attributes })));
     const byModel = {};
     const modelEntry = model => byModel[model] || (byModel[model] = { model, calls: 0, inputTokens: 0, outputTokens: 0, errors: 0 });
     const finishReasons = {};
@@ -644,29 +956,29 @@
       }
     }
 
-    // --- tools
+    // --- tools (same events-over-spans rule per service as LLM usage)
+    const resolveName = createNameResolver(allRecords, opts.knownNames);
     const toolEvents = logs.filter(l => l.name === 'copilot_chat.tool.call');
-    const toolSpans = spans.filter(s => s.attributes[OP] === 'execute_tool');
-    const toolSource = toolEvents.length ? 'events' : toolSpans.length ? 'spans' : 'metrics';
+    const toolEventServices = new Set(toolEvents.map(serviceOf));
+    const toolSpans = spans.filter(s => s.attributes[OP] === 'execute_tool' && !toolEventServices.has(serviceOf(s)));
+    const toolSource = sourceLabel(toolEvents.length, toolSpans.length);
+    const toolItems = toolEvents.map(e => ({
+      name: e.attributes[TOOL] || 'unknown', t: e.time, ms: num(e.attributes.duration_ms), attributes: e.attributes,
+      failed: !truthy(e.attributes.success), errorType: e.attributes['error.type'] || 'unknown',
+    })).concat(toolSpans.map(s => ({
+      name: s.attributes[TOOL] || s.name, t: s.start, ms: num(s.durationMs), attributes: s.attributes,
+      failed: !!(s.attributes['error.type'] || (s.status && s.status.code === 2)), errorType: s.attributes['error.type'] || 'error',
+    })));
     const tools = {};
     const toolErrors = {};
     const toolEntry = name => tools[name] || (tools[name] = { name, calls: 0, failures: 0, totalMs: 0, maxMs: 0, timedCalls: 0 });
-    if (toolSource === 'events') {
-      for (const e of toolEvents) {
-        const t = toolEntry(e.attributes[TOOL] || 'unknown');
+    if (toolItems.length) {
+      for (const it of toolItems) {
+        const t = toolEntry(toolDisplayName(it.name, resolveName));
         t.calls++;
-        if (!truthy(e.attributes.success)) { t.failures++; inc(toolErrors, e.attributes['error.type'] || 'unknown'); }
-        const d = num(e.attributes.duration_ms);
-        t.totalMs += d; t.timedCalls++; t.maxMs = Math.max(t.maxMs, d);
-        const b = bucketAt(e.time); if (b) b.toolCalls++;
-      }
-    } else if (toolSource === 'spans') {
-      for (const s of toolSpans) {
-        const t = toolEntry(s.attributes[TOOL] || s.name);
-        t.calls++;
-        if (s.attributes['error.type'] || (s.status && s.status.code === 2)) { t.failures++; inc(toolErrors, s.attributes['error.type'] || 'error'); }
-        t.totalMs += num(s.durationMs); t.timedCalls++; t.maxMs = Math.max(t.maxMs, num(s.durationMs));
-        const b = bucketAt(s.start); if (b) b.toolCalls++;
+        if (it.failed) { t.failures++; inc(toolErrors, it.errorType); }
+        t.totalMs += it.ms; t.timedCalls++; t.maxMs = Math.max(t.maxMs, it.ms);
+        const b = bucketAt(it.t); if (b) b.toolCalls++;
       }
     } else {
       for (const a of aggregated) {
@@ -816,6 +1128,7 @@
       timeline: { bucketMs, buckets: timeline },
       tools: { list: toolList, errors: toolErrors },
       agent,
+      capabilities: analyzeCapabilities(spans, toolItems, aggregated, resolveName),
       chatSessions: { byModel: chatSessionsByModel, byAgent: chatSessionsByAgent },
       edits,
       errors,
@@ -832,5 +1145,5 @@
     return result;
   }
 
-  return { parseJsonl, normalizeObject, aggregateMetrics, analyze, analyzeJsonl, listSessions, toMs, resourceAttributes };
+  return { parseJsonl, normalizeObject, aggregateMetrics, analyze, analyzeJsonl, listSessions, toMs, resourceAttributes, sha256Hex };
 });

@@ -5,31 +5,118 @@
   const { hbar, countBars, donut, columns, lines, table, statList, fmt, esc } = window.Charts;
   const $ = id => document.getElementById(id);
 
-  const state = { records: [], parsed: null, sourceLabel: '', fromServer: false };
+  const state = { records: [], parsed: null, sourceLabel: '', fromServer: false, fileHandle: null, loadId: 0, knownNames: [] };
 
   // ---------------------------------------------------------------------------
   // Loading
   // ---------------------------------------------------------------------------
 
+  // Shows the loading indicator; returns a token so a slower, superseded load cannot overwrite a newer one.
+  function startLoading(name, detail) {
+    const id = ++state.loadId;
+    $('loadError').hidden = true;
+    $('empty').hidden = true;
+    $('loadingTitle').textContent = name ? `Loading ${name}…` : 'Loading data…';
+    $('loadingDetail').textContent = detail || '';
+    $('loading').hidden = false;
+    $('source').textContent = name ? `Loading ${name}…` : 'Loading…';
+    $('reload').disabled = true;
+    return id;
+  }
+
+  function stopLoading(id) {
+    if (id !== state.loadId) return false;
+    $('loading').hidden = true;
+    $('reload').disabled = false;
+    return true;
+  }
+
+  // Lets the browser paint the indicator before the synchronous parse of a large file.
+  const nextPaint = () => new Promise(resolve => setTimeout(resolve, 0));
+
   async function loadFromServer() {
+    let id = startLoading();
     try {
-      const [meta, data] = await Promise.all([fetch('/api/source'), fetch('/api/data')]);
-      if (!meta.ok || !data.ok) throw new Error('No server data');
+      const meta = await fetch('/api/source', { cache: 'no-store' });
+      if (!meta.ok) throw new Error(await meta.text());
       const info = await meta.json();
+      if (id !== state.loadId) return;
+      id = startLoading(info.name || info.path, `${info.path} · ${fmtBytes(info.size)}`);
+      const data = await fetch('/api/data', { cache: 'no-store' });
+      if (!data.ok) throw new Error(await data.text());
+      const text = await data.text();
+      state.knownNames = await fetchKnownNames();
+      await nextPaint();
+      if (id !== state.loadId) return;
       state.fromServer = true;
-      ingest(await data.text(), `${info.name} · ${fmtBytes(info.size)} · modified ${new Date(info.modified).toLocaleString()}`);
-    } catch (_) {
-      showEmpty();
+      state.fileHandle = null;
+      ingest(text, `${info.path} · ${fmtBytes(info.size)} · modified ${new Date(info.modified).toLocaleString()}`);
+      stopLoading(id);
+    } catch (error) {
+      if (stopLoading(id)) showLoadError(error);
     }
   }
 
-  function loadFile(file) {
-    const reader = new FileReader();
-    reader.onload = () => ingest(String(reader.result), `${file.name} · ${fmtBytes(file.size)} (local file)`);
-    reader.readAsText(file);
+  // MCP server names from local configs (server mode only) to resolve hashed names; optional.
+  async function fetchKnownNames() {
+    try {
+      const res = await fetch('/api/names', { cache: 'no-store' });
+      return res.ok ? (await res.json()).mcpServers || [] : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function loadFile(file, handle = null) {
+    const id = startLoading(file.name, `${fmtBytes(file.size)} (local file)`);
+    try {
+      const text = await file.text();
+      await nextPaint();
+      if (id !== state.loadId) return;
+      state.fromServer = false;
+      state.fileHandle = handle;
+      ingest(text, `${file.name} · ${fmtBytes(file.size)} (local file)`);
+      stopLoading(id);
+    } catch (error) {
+      if (stopLoading(id)) showLoadError(error);
+    }
+  }
+
+  async function openFile() {
+    try {
+      const [handle] = await window.showOpenFilePicker({ multiple: false });
+      await loadFile(await handle.getFile(), handle);
+    } catch (error) {
+      if (error.name !== 'AbortError') showLoadError(error);
+    }
+  }
+
+  async function reload() {
+    if (state.fromServer) return loadFromServer();
+    if (state.fileHandle) {
+      try {
+        await loadFile(await state.fileHandle.getFile(), state.fileHandle);
+      } catch (error) {
+        showLoadError(error);
+      }
+    } else if (!state.parsed && location.protocol.startsWith('http')) {
+      return loadFromServer();
+    } else {
+      $('loadError').textContent = 'This browser requires you to select the loaded file again to read its current contents.';
+      $('loadError').hidden = false;
+      $('fileInput').click();
+    }
+  }
+
+  function showLoadError(error) {
+    if (state.parsed) $('source').textContent = state.sourceLabel;
+    else { showEmpty(); $('source').textContent = 'No data loaded'; }
+    $('loadError').textContent = `Unable to load data: ${error.message}`;
+    $('loadError').hidden = false;
   }
 
   function ingest(text, label) {
+    $('loadError').hidden = true;
     state.parsed = window.CopilotOtel.parseJsonl(text);
     state.records = state.parsed.records;
     state.sourceLabel = label;
@@ -44,6 +131,7 @@
   }
 
   function showEmpty() {
+    $('loading').hidden = true;
     $('empty').hidden = false;
     $('content').hidden = true;
   }
@@ -69,7 +157,7 @@
   }
 
   function render() {
-    const a = window.CopilotOtel.analyze(state.records, { sessionId: $('sessionFilter').value || undefined });
+    const a = window.CopilotOtel.analyze(state.records, { sessionId: $('sessionFilter').value || undefined, knownNames: state.knownNames });
     a.summary.lines = state.parsed.lines;
     a.summary.parseErrors = state.parsed.errors.length;
     window.__analysis = a; // handy for debugging in devtools
@@ -85,6 +173,7 @@
     renderLlm(a);
     renderTools(a);
     renderAgent(a);
+    renderCapabilities(a);
     renderEdits(a);
     renderInventory(a);
     renderExplorer();
@@ -140,8 +229,11 @@
   function renderLlm(a) {
     $('llmSource').textContent = 'from ' + a.sources.llm;
     const models = a.llm.byModel;
-    hbar($('tokensByModel'), models.map(m => ({ label: m.model, values: [m.inputTokens, m.outputTokens], text: `${fmt(m.inputTokens)} / ${fmt(m.outputTokens)}` })),
-      [{ label: 'Input tokens', color: 'var(--c1)' }, { label: 'Output tokens', color: 'var(--c3)' }]);
+    hbar($('tokensByModel'), models.map(m => ({
+      label: m.model,
+      values: [m.inputTokens, m.outputTokens],
+      text: `<span class="sub-val">${esc(fmt(m.inputTokens))} in</span><span class="sub-val">${esc(fmt(m.outputTokens))} out${m.inputTokens ? ` · ${esc(pct(m.outputTokens / m.inputTokens))}` : ''}</span>`,
+    })), [{ label: 'Input tokens', color: 'var(--c1)' }, { label: 'Output tokens', color: 'var(--c3)' }], { independent: true });
     donut($('callsByModel'), models.map(m => ({ label: m.model, value: m.calls })));
     countBars($('finishReasons'), a.llm.finishReasons, { color: 'var(--c3)', empty: 'No finish reasons recorded' });
     countBars($('errors'), a.errors, { color: 'var(--c6)', empty: 'No errors 🎉' });
@@ -210,6 +302,73 @@
     const actionColors = ['var(--c1)', 'var(--c2)', 'var(--c4)', 'var(--c5)', 'var(--c7)', 'var(--c8)'];
     const ua = Object.entries(e.userActions).map(([label, value], i) => ({ label: `action: ${label}`, value, color: actionColors[i % actionColors.length] }));
     donut($('feedback'), fb.concat(ua), { empty: 'No feedback or user actions recorded' });
+  }
+
+  const FULL_SPANS_HINT = 'only in full-span exports (Copilot CLI / VS Code agent host)';
+  const badge = (text, cls) => ` <span class="tag ${cls || ''}">${esc(text)}</span>`;
+
+  function renderCapabilities(a) {
+    const c = a.capabilities;
+    $('capContext').textContent = c.contextConversations ? `${fmt(c.contextConversations)} conversation(s) with a capability snapshot` : '';
+
+    table($('capAgents'), [
+      { key: 'name', label: 'Agent', render: r => esc(r.name) + (r.subagent ? badge('subagent') : '') + (r.custom ? badge('custom', 'custom') : '') },
+      { key: 'count', label: 'Invocations', num: true },
+      { key: 'avgMs', label: 'Avg duration', num: true, render: r => ms(r.avgMs) },
+      { key: 'turns', label: 'Turns', num: true, render: r => fmt(r.turns || undefined) },
+      { key: 'inputTokens', label: 'Tokens in / out', num: true, render: r => `${esc(fmt(r.inputTokens))} / ${esc(fmt(r.outputTokens))}` },
+      { key: 'cost', label: 'Cost', num: true, render: r => fmt(r.cost || undefined) },
+      { key: 'failures', label: 'Failed', num: true },
+    ], c.agents, { empty: `No invoke_agent spans (${FULL_SPANS_HINT})` });
+    countBars($('llmByAgent'), c.llmCallsByAgent, { color: 'var(--c4)', label: 'LLM calls', empty: 'No chat spans with gen_ai.agent.name' });
+
+    const used = c.skills.filter(s => s.count);
+    const unused = c.skills.filter(s => !s.count);
+    table($('capSkills'), [
+      { key: 'name', label: 'Skill', render: r => `<code>${esc(r.name)}</code>` },
+      { key: 'count', label: 'Invocations', num: true },
+      { key: 'avgMs', label: 'Avg', num: true, render: r => ms(r.avgMs) },
+      { key: 'failures', label: 'Failed', num: true },
+      { key: 'availableIn', label: 'Loaded in', num: true, render: r => (r.availableIn ? `${fmt(r.availableIn)} conv.` : '–') },
+    ], used, { empty: c.skills.length ? 'No skill invocations' : `No skill data (${FULL_SPANS_HINT})` });
+    $('capSkillsUnused').innerHTML = unused.length
+      ? `<div class="muted sub-head">Loaded but never invoked (${unused.length})</div><div class="attrs">${unused.map(s => `<span class="attr" title="${esc(`loaded in ${s.availableIn} conversation(s)`)}">${esc(s.name)}</span>`).join('')}</div>`
+      : '';
+
+    const serverName = s => (s.resolved ? esc(s.name) : `<code title="${esc('sha256 ' + s.id + ' — add the server to a local MCP config to resolve it')}">${esc(s.name)}</code>`);
+    table($('capMcp'), [
+      { key: 'name', label: 'MCP server', render: serverName },
+      { key: 'calls', label: 'Tool calls', num: true },
+      { key: 'failures', label: 'Failed', num: true },
+      { key: 'avgMs', label: 'Avg', num: true, render: r => ms(r.avgMs) },
+      { key: 'tools', label: 'Tools used', num: true, render: r => fmt(r.tools.length) },
+      { key: 'availableIn', label: 'Loaded in', num: true, render: r => (r.availableIn ? `${fmt(r.availableIn)} conv.` : '–') },
+    ], c.mcp.servers, { empty: `No MCP servers or MCP tool calls (${FULL_SPANS_HINT})` });
+    const conn = c.mcp.connections;
+    const connTotal = Object.values(conn).reduce((s, v) => s + v, 0);
+    $('mcpConnections').innerHTML = connTotal
+      ? `<div class="muted sub-head">Server connections: ${Object.entries(conn).map(([k, v]) => `${esc(k)} ${esc(fmt(v))}`).join(' · ')}${conn.failure ? ` <span class="pill-bad">${esc(pct(conn.failure / connTotal))} failed</span>` : ''}</div>`
+      : '';
+    const mcpTools = c.mcp.servers.flatMap(s => s.tools.map(t => ({ label: `${s.name}/${t.name}`, values: [t.calls - t.failures, t.failures] })))
+      .sort((x, y) => (y.values[0] + y.values[1]) - (x.values[0] + x.values[1])).slice(0, 15);
+    hbar($('mcpTools'), mcpTools, [{ label: 'Succeeded', color: 'var(--c3)' }, { label: 'Failed', color: 'var(--c6)' }], { empty: 'No MCP tool calls' });
+
+    table($('capCustomAgents'), [
+      { key: 'name', label: 'Custom agent' },
+      { key: 'invocations', label: 'Invocations', num: true },
+      { key: 'availableIn', label: 'Loaded in', num: true, render: r => `${fmt(r.availableIn)} conv.` },
+    ], c.customAgents, { empty: `No custom agents (${FULL_SPANS_HINT})` });
+
+    hbar($('permissions'), c.permissions.map(p => ({ label: p.kind, values: [p.approved, p.denied, p.other] })),
+      [{ label: 'Approved', color: 'var(--c3)' }, { label: 'Denied', color: 'var(--c6)' }, { label: 'Other', color: 'var(--c5)' }],
+      { empty: `No permission requests (${FULL_SPANS_HINT})` });
+
+    table($('capTimings'), [
+      { key: 'name', label: 'Phase', render: r => `<code>${esc(r.name)}</code>` },
+      { key: 'count', label: 'Sessions', num: true },
+      { key: 'avgMs', label: 'Avg', num: true, render: r => ms(r.avgMs) },
+      { key: 'maxMs', label: 'Max', num: true, render: r => ms(r.maxMs) },
+    ], c.startupTimings, { empty: `No session.timing.* spans (${FULL_SPANS_HINT})` });
   }
 
   function attrChips(attrs) {
@@ -285,14 +444,29 @@
   $('kindFilter').addEventListener('change', renderExplorer);
   let debounce;
   $('textFilter').addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(renderExplorer, 200); });
-  $('fileInput').addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
-  $('reload').addEventListener('click', () => (state.fromServer ? loadFromServer() : $('fileInput').click()));
+  $('openFile').addEventListener('click', e => {
+    if (window.showOpenFilePicker) { e.preventDefault(); openFile(); }
+  });
+  $('fileInput').addEventListener('change', e => {
+    if (e.target.files[0]) loadFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  $('reload').addEventListener('click', reload);
   document.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
   document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
-  document.addEventListener('drop', e => {
+  document.addEventListener('drop', async e => {
     e.preventDefault();
     document.body.classList.remove('dragging');
-    if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+    const file = e.dataTransfer.files[0];
+    const item = e.dataTransfer.items && e.dataTransfer.items[0];
+    if (file) {
+      try {
+        const handle = item && item.getAsFileSystemHandle ? await item.getAsFileSystemHandle() : null;
+        await loadFile(handle ? await handle.getFile() : file, handle);
+      } catch (error) {
+        showLoadError(error);
+      }
+    }
   });
 
   if (location.protocol.startsWith('http')) loadFromServer(); else showEmpty();

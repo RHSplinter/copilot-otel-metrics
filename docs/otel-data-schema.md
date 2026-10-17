@@ -69,9 +69,45 @@ from the source code. `recordMetric` → histogram, `incrementCounter` → count
 Metrics use **cumulative** temporality (SDK enum `aggregationTemporality: 1`). To get totals the parser keeps the
 latest point per *(resource, metric, attributes, startTime)* and sums across resources (windows/restarts).
 
+## Copilot CLI and VS Code agent host
+
+The Copilot CLI (`service.name` `github-copilot`, also used by the VS Code agent host with
+`service.namespace=vscode.agent-host`) writes to the same file with a different, fully serialized format:
+
+| Shape | Meaning |
+|---|---|
+| `{"type":"span", traceId, spanId, parentSpanId, name, startTime, endTime, attributes, status, events, resource: {attributes}}` | Full spans (no `{}` problem). |
+| `{"type":"metric", name, unit, dataPoints: [{attributes, startTime, endTime, value}], resource: {attributes}}` | One metric per line, cumulative (constant `startTime`, growing value). No `session.id` on the resource. |
+
+Agents, skills, MCP servers and related data only exist in these spans:
+
+| Span | Key attributes |
+|---|---|
+| `invoke_agent` / `invoke_agent <name>` | `gen_ai.agent.name` (absent for the main CLI agent), `github.copilot.agent.type`, `gen_ai.conversation.id`, token usage, `github.copilot.turn_count`, `github.copilot.cost`; a parent `invoke_agent` span marks a **subagent** (e.g. `explore`). Capability snapshot: `github.copilot.context.skills`, `.custom_agent_names`, `.mcp_server_names` (JSON string arrays). |
+| `execute_tool skill <name>` | `gen_ai.skill.name` — a skill invocation. |
+| `execute_tool <hash>/<hash>` | MCP tool call. `gen_ai.tool.name` is `sha256(server)/sha256(tool)`, `github.copilot.tool.parameters.mcp_server_name_hash` is the server hash. |
+| `execute_tool <hash>`, `external_tool <hash>` | Host-provided (external) tool, name hashed. |
+| `permission` | `github.copilot.permission.kind` (read/shell/write/url/custom-tool), `github.copilot.permission.result` (`approved`, `denied-…`). |
+| `session.timing.<phase>` | Startup phases, e.g. `mcp_startup_wait`, `skills_loading`, `custom_agent_loading`. |
+| metric `github.copilot.mcp.server.connection.count` | `outcome` (success/failure). |
+
+VS Code (`copilot-chat`) chat spans also carry `gen_ai.agent.name` (e.g. `panel/editAgent`, `XtabProvider`), but in
+the file export these spans are `{}`; VS Code MCP tools appear in tool events as `mcp_<server>_<tool>`.
+
+**Resolving hashed names.** MCP server, tool and external tool names are SHA-256 hashes. The parser hashes candidate
+names and matches them: well-known names (GitHub MCP server and its tools, bundled plugins), plain tool names and
+tool definitions found in the file, and — when served by `scripts/serve.js` — MCP server *names* (keys only) from local
+configs: `~/.copilot/mcp-config.json`, Copilot CLI plugin `mcp.json` files, VS Code user/profile `mcp.json` and
+agent plugins. Unresolved names are shown as a short hash.
+
+When a file contains both VS Code events and spans for the same service, only events are counted for LLM calls and
+tools (to avoid double counting); services that emit only spans (the CLI) are counted from spans.
+
 ## What is (and isn't) available
 
 - ✅ Usage per model, tokens, LLM latency and time-to-first-token, tool usage/failures/durations, agent turns,
   edit acceptance, lines of code by language, edit survival, user feedback, versions and windows.
+- ✅ From Copilot CLI / agent host spans: agents and subagents, custom agents, skills (loaded vs. invoked), MCP servers
+  and tool calls, MCP connection outcomes, permission requests and capability startup timings.
 - ❌ Span hierarchy (trace trees), per-request durations from spans and prompt/response content (`captureContent`)
-  — these only exist on spans, which the file exporter writes as `{}`.
+  for VS Code — these only exist on spans, which the VS Code file exporter writes as `{}`.

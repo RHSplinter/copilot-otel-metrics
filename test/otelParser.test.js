@@ -116,18 +116,25 @@ test('analyzes generated sample consistently (events vs metrics)', () => {
     const a = P.analyzeJsonl(fs.readFileSync(out, 'utf8'));
     assert.ok(a.summary.logs > 0 && a.summary.metricExports > 0 && a.summary.lostSpans > 0);
     assert.equal(a.summary.parseErrors, 0);
-    assert.equal(a.sources.llm, 'events');
-    assert.equal(a.sources.tools, 'events');
+    assert.equal(a.sources.llm, 'events + spans');
+    assert.equal(a.sources.tools, 'events + spans');
+    assert.ok(a.capabilities.agents.length > 0 && a.capabilities.skills.length > 0);
 
-    const agg = P.aggregateMetrics(P.parseJsonl(fs.readFileSync(out, 'utf8')).records.filter(r => r.kind === 'metric'));
+    // VS Code (copilot-chat) events must agree with its own metrics; the sample's CLI session is excluded.
+    const vscodeRecords = P.parseJsonl(fs.readFileSync(out, 'utf8')).records.filter(r => !r.resource || r.resource['service.name'] !== 'github-copilot');
+    const v = P.analyze(vscodeRecords);
+    assert.equal(v.sources.llm, 'events');
+    assert.equal(v.sources.tools, 'events');
+
+    const agg = P.aggregateMetrics(vscodeRecords.filter(r => r.kind === 'metric'));
     let toolCount = 0;
     let inputTokens = 0;
     for (const m of agg.values()) {
       if (m.name === 'copilot_chat.tool.call.count') toolCount += m.value;
       if (m.name === 'gen_ai.client.token.usage' && m.attributes['gen_ai.token.type'] === 'input') inputTokens += m.value.sum;
     }
-    assert.equal(toolCount, a.summary.toolCalls);
-    assert.equal(inputTokens, a.summary.inputTokens);
+    assert.equal(toolCount, v.summary.toolCalls);
+    assert.equal(inputTokens, v.summary.inputTokens);
 
     const sessions = P.listSessions(P.parseJsonl(fs.readFileSync(out, 'utf8')).records);
     const filtered = P.analyzeJsonl(fs.readFileSync(out, 'utf8'), { sessionId: sessions[0].id });

@@ -9,6 +9,9 @@
  *  - ResourceMetrics -> { resource, scopeMetrics: [{ scope, metrics: [{ descriptor, dataPointType, dataPoints }] }] }
  *  - Spans          -> `{}` (circular SDK span cannot be stringified, see microsoft/vscode#319993)
  *                      or, with --fixed-spans, the plain snapshot proposed in the upstream fix.
+ * Plus one simulated Copilot CLI session (service.name github-copilot), which always writes full spans
+ * (invoke_agent with skill/MCP/custom-agent context, skill + hashed MCP tool calls, permissions, startup timings)
+ * and `{"type":"metric", ...}` metric lines.
  *
  * Usage: node scripts/generate-sample-data.js [--out data/sample-copilot-otel.jsonl] [--fixed-spans] [--seed 42]
  */
@@ -336,6 +339,100 @@ for (const w of windows) {
   flushSpans();
   exportMetrics(win, t + 60e3);
 }
+
+// --- Copilot CLI (always writes full spans + its own metric line format) -------------------------------------
+const sha = s => require('node:crypto').createHash('sha256').update(s).digest('hex');
+const CLI_RES = { attributes: { 'service.name': 'github-copilot', 'service.version': '1.0.95-0' }, schemaUrl: 'https://opentelemetry.io/schemas/1.44.0' };
+const CLI_SCOPE = { name: 'github.copilot', version: '1.0.95-0' };
+const CLI_SKILLS = ['code-review', 'release-notes', 'terraform-azure', 'write-tests', 'docs-style'];
+const CLI_AGENTS = ['docs-writer', 'security-reviewer'];
+// 'contoso-internal-docs' is intentionally not a well-known name, so it stays hashed unless a local MCP config defines it
+const CLI_MCP = { 'github-mcp-server': ['get_file_contents', 'search_code', 'list_pull_requests'], 'contoso-internal-docs': ['search_docs'] };
+const CLI_TOOLS = [['view', 10], ['powershell', 6], ['edit', 5], ['grep', 4], ['glob', 2]];
+const cliCounters = new Map();
+
+function cliSpan(traceId, spanId, parentSpanId, name, start, end, attributes, failed) {
+  lines.push({ type: 'span', traceId, spanId, ...(parentSpanId ? { parentSpanId } : {}), name, kind: 0, startTime: hr(start), endTime: hr(end), attributes, status: { code: failed ? 2 : 0 }, events: [], resource: CLI_RES, instrumentationScope: CLI_SCOPE });
+}
+
+function cliCount(name, attributes, value) {
+  const key = name + '|' + JSON.stringify(attributes);
+  cliCounters.set(key, { name, attributes, value: (cliCounters.get(key) || { value: 0 }).value + value });
+}
+
+function exportCliMetrics(startMs, timeMs) {
+  for (const c of cliCounters.values()) {
+    lines.push({ type: 'metric', name: c.name, description: 'Number of completed MCP server connection attempts by transport and outcome.', unit: '{attempt}', dataPoints: [{ attributes: c.attributes, startTime: hr(startMs), endTime: hr(timeMs), value: c.value }], resource: CLI_RES, instrumentationScope: CLI_SCOPE });
+  }
+}
+
+function simulateCliSession(startMs, conversations) {
+  let t = startMs;
+  const mcpHashes = Object.keys(CLI_MCP).map(sha);
+  for (let i = 0; i < 3; i++) {
+    const traceId = hex(32), rootId = hex(16);
+    for (const [phase, dur] of [['mcp_startup_wait', randInt(400, 1600)], ['skills_loading', randInt(10, 60)], ['custom_agent_loading', randInt(5, 30)], ['external_tool_registration', randInt(1, 8)]]) {
+      cliSpan(traceId, hex(16), rootId, `session.timing.${phase}`, t, t + dur, { 'github.copilot.session.timing.phase': phase, 'github.copilot.session.timing.duration_ms': dur });
+    }
+    for (let s = 0; s < mcpHashes.length; s++) cliCount('github.copilot.mcp.server.connection.count', { outcome: rand() < 0.85 ? 'success' : 'failure' }, 1);
+    t += randInt(2000, 5000);
+  }
+  for (let c = 0; c < conversations; c++) {
+    const conv = uuid();
+    const traceId = hex(32), invId = hex(16);
+    const start = t;
+    const model = pick(MODELS);
+    const turns = randInt(2, 6);
+    let inTok = 0, outTok = 0;
+    for (let turn = 0; turn < turns; turn++) {
+      const d = randInt(2000, 9000), ti = randInt(20000, 60000), to = randInt(100, 900);
+      cliSpan(traceId, hex(16), invId, `chat ${model.req}`, t, t + d, { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': 'github', 'gen_ai.conversation.id': conv, 'gen_ai.request.model': model.req, 'gen_ai.response.model': model.res, 'gen_ai.usage.input_tokens': ti, 'gen_ai.usage.output_tokens': to });
+      t += d; inTok += ti; outTok += to;
+      for (let k = randInt(1, 3); k > 0; k--) {
+        const r = rand();
+        const d2 = randInt(20, 3000);
+        const base = { 'gen_ai.operation.name': 'execute_tool', 'gen_ai.conversation.id': conv, 'gen_ai.tool.call.id': `call_${hex(20)}`, 'gen_ai.tool.type': 'function', 'gen_ai.provider.name': 'github' };
+        if (r < 0.15) {
+          const skill = weighted([[CLI_SKILLS[0], 4], [CLI_SKILLS[1], 2], [CLI_SKILLS[3], 1]]);
+          cliSpan(traceId, hex(16), invId, `execute_tool skill ${skill}`, t, t + d2, { ...base, 'gen_ai.tool.name': 'skill', 'gen_ai.skill.name': skill });
+        } else if (r < 0.4) {
+          const server = weighted([['github-mcp-server', 4], ['contoso-internal-docs', 1]]);
+          const tool = `${sha(server)}/${sha(pick(CLI_MCP[server]))}`;
+          const failed = rand() < 0.08;
+          cliSpan(traceId, hex(16), invId, `execute_tool ${tool}`, t, t + d2, { ...base, 'gen_ai.tool.name': tool, 'github.copilot.tool.parameters.mcp_server_name_hash': sha(server), ...(failed ? { 'error.type': 'McpError' } : {}) }, failed);
+        } else {
+          const tool = weighted(CLI_TOOLS);
+          if (tool === 'powershell' || tool === 'edit') {
+            const result = weighted([['approved', 12], ['denied-interactively-by-user', 1]]);
+            cliSpan(traceId, hex(16), invId, 'permission', t, t + randInt(50, 8000), { 'gen_ai.conversation.id': conv, 'github.copilot.permission.kind': tool === 'edit' ? 'write' : 'shell', 'github.copilot.permission.result': result });
+            if (result !== 'approved') continue;
+          }
+          cliSpan(traceId, hex(16), invId, `execute_tool ${tool}`, t, t + d2, { ...base, 'gen_ai.tool.name': tool });
+        }
+        t += d2;
+      }
+    }
+    if (rand() < 0.4) {
+      const subId = hex(16), d = randInt(15000, 60000);
+      cliSpan(traceId, subId, invId, 'invoke_agent explore', t, t + d, { 'gen_ai.operation.name': 'invoke_agent', 'gen_ai.provider.name': 'github', 'gen_ai.agent.name': 'explore', 'gen_ai.conversation.id': conv, 'github.copilot.agent.type': 'builtin', 'gen_ai.usage.input_tokens': randInt(30000, 90000), 'gen_ai.usage.output_tokens': randInt(500, 2500), 'github.copilot.turn_count': randInt(2, 6) });
+      t += d;
+    }
+    const custom = rand() < 0.25;
+    cliSpan(traceId, invId, undefined, 'invoke_agent', start, t, {
+      'gen_ai.operation.name': 'invoke_agent', 'gen_ai.provider.name': 'github', 'gen_ai.conversation.id': conv,
+      ...(custom ? { 'gen_ai.agent.name': CLI_AGENTS[0] } : {}),
+      'github.copilot.context.skills': JSON.stringify(CLI_SKILLS),
+      'github.copilot.context.mcp_server_names': JSON.stringify(mcpHashes),
+      'github.copilot.context.custom_agent_names': JSON.stringify(CLI_AGENTS),
+      'github.copilot.agent.type': custom ? 'custom' : 'builtin',
+      'gen_ai.usage.input_tokens': inTok, 'gen_ai.usage.output_tokens': outTok,
+      'github.copilot.cost': randInt(1, 4), 'github.copilot.turn_count': turns,
+    });
+    t += randInt(60e3, 600e3);
+  }
+  exportCliMetrics(startMs, t);
+}
+simulateCliSession(base + 50 * 3600e3, 6);
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, lines.map(l => JSON.stringify(l)).join('\n') + '\n');

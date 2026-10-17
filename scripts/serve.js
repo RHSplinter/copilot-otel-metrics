@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { resolveDataFile } = require('./dataFile');
+const { readMcpServerNames } = require('./mcpNames');
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
@@ -26,16 +27,24 @@ const ROUTES = {
 };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  if (url.pathname === '/api/source') {
-    const stat = fs.statSync(DATA_FILE);
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ path: DATA_FILE, name: path.basename(DATA_FILE), size: stat.size, modified: stat.mtimeMs }));
+  if (url.pathname === '/api/source' || url.pathname === '/api/data') {
+    try {
+      const body = url.pathname === '/api/source'
+        ? await fs.promises.stat(DATA_FILE).then(stat => JSON.stringify({ path: DATA_FILE, name: path.basename(DATA_FILE), size: stat.size, modified: stat.mtimeMs }))
+        : await fs.promises.readFile(DATA_FILE);
+      res.writeHead(200, { 'Content-Type': url.pathname === '/api/source' ? 'application/json' : 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(body);
+    } catch (error) {
+      console.error(`Unable to read ${DATA_FILE}: ${error.message}`);
+      res.writeHead(error.code === 'ENOENT' ? 404 : 500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(`Unable to read the loaded data file: ${error.message}`);
+    }
   }
-  if (url.pathname === '/api/data') {
-    res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
-    return fs.createReadStream(DATA_FILE).pipe(res);
+  if (url.pathname === '/api/names') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ mcpServers: readMcpServerNames() }));
   }
   const file = ROUTES[url.pathname];
   if (!file) {
@@ -47,6 +56,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Copilot OTel dashboard: http://localhost:${PORT}`);
+  console.log(`Copilot OTel dashboard: http://localhost:${server.address().port}`);
   console.log(`Serving data from: ${path.relative(process.cwd(), DATA_FILE) || DATA_FILE}`);
 });
