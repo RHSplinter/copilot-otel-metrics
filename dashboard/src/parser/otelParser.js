@@ -542,13 +542,20 @@
       const id = sessionIdOf(r.resource);
       let s = sessions.get(id);
       if (!s) {
-        s = { id, serviceName: r.resource['service.name'], serviceVersion: r.resource['service.version'], first: undefined, last: undefined, records: 0, repos: {}, branches: {} };
+        s = { id, serviceName: r.resource['service.name'], serviceVersion: r.resource['service.version'], first: undefined, last: undefined, records: 0, repos: {}, branches: {}, tags: [] };
         sessions.set(id, s);
       }
       s.records++;
       const t = r.time || r.start || r.end;
       if (t) { s.first = s.first === undefined ? t : Math.min(s.first, t); s.last = s.last === undefined ? t : Math.max(s.last, t); }
       const a = r.attributes;
+      if (a) {
+        for (const key of ['gen_ai.request.model', 'gen_ai.response.model']) {
+          const model = a[key];
+          const tag = model === 'hydrafusion' ? 'HydraFusion' : model === 'hydrafusion-max' ? 'HydraFusion Max' : undefined;
+          if (tag && !s.tags.includes(tag)) s.tags.push(tag);
+        }
+      }
       if ((r.kind === 'log' || r.kind === 'span') && a) {
         const repo = repoNameFromUrl(a['copilot_chat.repo.remote_url']);
         if (repo) {
@@ -560,6 +567,7 @@
     }
     const list = [...sessions.values()].sort((a, b) => (a.first || 0) - (b.first || 0));
     for (const s of list) {
+      s.tags.sort();
       const repos = Object.keys(s.repos).sort((x, y) => s.repos[y] - s.repos[x]);
       s.repo = repos[0];
       const branchKey = s.repo && topKey(Object.fromEntries(Object.entries(s.branches).filter(([k]) => k.startsWith(s.repo + '\n'))));

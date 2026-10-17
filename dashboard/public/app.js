@@ -151,7 +151,8 @@
     const sessions = window.CopilotOtel.listSessions(state.records);
     sel.innerHTML = '<option value="">All sessions (' + sessions.length + ')</option>' + sessions.map(s => {
       const tip = [s.id, s.serviceName && s.serviceName + (s.serviceVersion ? ' ' + s.serviceVersion : ''), s.repos.length > 1 ? 'Repos: ' + s.repos.join(', ') : ''].filter(Boolean).join('\n');
-      return `<option value="${esc(s.id)}" title="${esc(tip)}">${esc(s.label)}${s.first ? ' · ' + esc(dateTime(s.first)) : ''}</option>`;
+      const tags = s.tags.map(tag => `[${tag}] `).join('');
+      return `<option value="${esc(s.id)}" title="${esc(tip)}">${esc(tags)}${esc(s.label)}${s.first ? ' · ' + esc(dateTime(s.first)) : ''}</option>`;
     }).join('');
     if (sessions.some(s => s.id === current)) sel.value = current;
   }

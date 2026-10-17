@@ -100,6 +100,30 @@ function dashboard(fetch) {
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
+test('session dropdown prefixes model tags and retains session IDs as filter values', async () => {
+  const data = ['hydrafusion', 'hydrafusion-max', 'gpt-4o'].map((model, i) => JSON.stringify({
+    hrTime: [1750000000, 0], _body: 'gen_ai.client.inference.operation.details',
+    resource: { attributes: { 'session.id': `window-${i}` } },
+    attributes: { 'event.name': 'gen_ai.client.inference.operation.details', 'gen_ai.request.model': model },
+  })).join('\n');
+  const ui = dashboard(async url => {
+    if (url === '/api/source') return { ok: true, json: async () => ({ path: 'models.jsonl', size: data.length, modified: 1 }) };
+    if (url === '/api/names') return { ok: true, json: async () => ({ mcpServers: [] }) };
+    return { ok: true, text: async () => data };
+  });
+  await settle();
+  const select = ui.get('sessionFilter');
+  assert.match(select.innerHTML, /value="window-0"[^>]*>\[HydraFusion\] window-0/);
+  assert.match(select.innerHTML, /value="window-1"[^>]*>\[HydraFusion Max\] window-1/);
+  assert.match(select.innerHTML, /value="window-2"[^>]*>window-2/);
+  select.value = 'window-1';
+  select.change();
+  assert.equal(ui.window.__analysis.summary.sessions, 1);
+  await ui.get('reload').click();
+  await settle();
+  assert.equal(select.value, 'window-1');
+});
+
 test('shows a loading indicator with the file name until the data is parsed', async () => {
   let releaseData;
   const dataReady = new Promise(resolve => { releaseData = resolve; });

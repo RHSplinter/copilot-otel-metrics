@@ -109,6 +109,29 @@ test('labels sessions with repo/branch from workspace metadata, falling back to 
   assert.equal(byId['9c2d7767-aaaa-bbbb-cccc-1234567890ab1791790200000'].label, '9c2d7767…0000');
 });
 
+test('tags sessions with HydraFusion models without changing labels or mixing sessions', () => {
+  const log = (id, attrs) => Object.assign(sdkLog('gen_ai.client.inference.operation.details', attrs), {
+    resource: { attributes: { 'session.id': id } },
+  });
+  const records = P.parseJsonl([
+    log('fusion', { 'gen_ai.request.model': 'hydrafusion' }),
+    log('fusion', { 'gen_ai.request.model': 'hydrafusion' }),
+    log('max', { 'gen_ai.response.model': 'hydrafusion-max' }),
+    log('both', { 'gen_ai.request.model': 'hydrafusion-max' }),
+    log('both', { 'gen_ai.request.model': 'hydrafusion' }),
+    log('ordinary', { 'gen_ai.request.model': 'gpt-4o', prompt: 'hydrafusion-max' }),
+    log('ordinary', {}),
+    sdkSum('gen_ai.client.token.usage', 10, { 'gen_ai.request.model': 'hydrafusion' }, 1750000060),
+  ].map(JSON.stringify).join('\n')).records;
+  const sessions = Object.fromEntries(P.listSessions(records).map(s => [s.id, s]));
+  assert.deepEqual(sessions.fusion.tags, ['HydraFusion']);
+  assert.deepEqual(sessions.max.tags, ['HydraFusion Max']);
+  assert.deepEqual(sessions.both.tags, ['HydraFusion', 'HydraFusion Max']);
+  assert.deepEqual(sessions.ordinary.tags, []);
+  assert.deepEqual(sessions['win-1'].tags, ['HydraFusion']);
+  assert.equal(sessions.fusion.label, 'fusion');
+});
+
 test('analyzes generated sample consistently (events vs metrics)', () => {
   const out = path.join(os.tmpdir(), `copilot-otel-test-${process.pid}.jsonl`);
   execFileSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'generate-sample-data.js'), '--out', out, '--seed', '7']);
